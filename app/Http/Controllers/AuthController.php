@@ -3,9 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
-use App\Traits\ApiResponse;
+use App\Http\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 class AuthController extends Controller
@@ -22,14 +23,22 @@ class AuthController extends Controller
                 'password' => 'required|string',
             ]);
 
-            // 2. Find user by email
+            // 2. Find user by phone
             $user = User::where('phone', $request->phone)->first();
 
-            // 3. Check user and password
+            // 3. Check user existence and password
             if (!$user || !Hash::check($request->password, $user->password)) {
                 return $this->errorResponse(
-                    'Invalid email or password',
+                    'Invalid phone number or password',
                     401
+                );
+            }
+
+            // 4. Check if user is an AGENT
+            if ($user->role !== 'AGENT') {
+                return $this->errorResponse(
+                    'Access denied. Only agent accounts are allowed to log into this system.',
+                    403
                 );
             }
 
@@ -47,10 +56,51 @@ class AuthController extends Controller
             );
 
         } catch (Throwable $th) {
-
+            Log::info($th->getMessage());
             return $this->errorResponse(
                 'Something went wrong',
                 500,
+                $th->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Check authentication service health status
+     */
+    public function checkHealth()
+    {
+        return $this->successResponse(
+            [
+                'status' => 'healthy',
+                'service' => 'KKP Store Auth Controller',
+                'timestamp' => now()->toIso8601String(),
+            ],
+            'Auth service is healthy',
+            200
+        );
+    }
+
+    /**
+     * Check authentication token validity and return user details.
+     */
+    public function checkToken(Request $request)
+    {
+        try {
+            $user = $request->user();
+
+            return $this->successResponse(
+                [
+                    'valid' => true,
+                    'user' => $user,
+                ],
+                'Token is valid',
+                200
+            );
+        } catch (Throwable $th) {
+            return $this->errorResponse(
+                'Invalid or expired token',
+                401,
                 $th->getMessage()
             );
         }
