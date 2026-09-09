@@ -5,7 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-class Branch extends Model
+class Item extends Model
 {
     use HasFactory;
 
@@ -17,8 +17,11 @@ class Branch extends Model
     protected $fillable = [
         'name',
         'code',
-        'address',
-        'total_warehouse_stock_value',
+        'category_id',
+        'purchase_price',
+        'selling_price',
+        'market_price',
+        'status',
     ];
 
     /**
@@ -29,7 +32,17 @@ class Branch extends Model
     protected function casts(): array
     {
         return [
-            'total_warehouse_stock_value' => 'decimal:2',
+            'purchase_price' => 'decimal:2',
+            'selling_price' => 'decimal:2',
+            'market_price' => 'decimal:2',
         ];
+    }
+
+    /**
+     * Get the category that owns the item.
+     */
+    public function category()
+    {
+        return $this->belongsTo(Category::class);
     }
 }

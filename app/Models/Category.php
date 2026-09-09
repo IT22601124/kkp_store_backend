@@ -5,7 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-class Branch extends Model
+class Category extends Model
 {
     use HasFactory;
 
@@ -17,19 +17,15 @@ class Branch extends Model
     protected $fillable = [
         'name',
         'code',
-        'address',
-        'total_warehouse_stock_value',
+        'badge_color',
+        'status',
     ];
 
     /**
-     * The attributes that should be cast.
-     *
-     * @return array<string, string>
+     * Get the items belonging to this category.
      */
-    protected function casts(): array
+    public function items()
     {
-        return [
-            'total_warehouse_stock_value' => 'decimal:2',
-        ];
+        return $this->hasMany(Item::class);
     }
 }
