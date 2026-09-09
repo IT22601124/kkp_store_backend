@@ -50,4 +50,12 @@ class User extends Authenticatable
             'password' => 'hashed',
         ];
     }
+
+    /**
+     * Get the DSR profile associated with the user.
+     */
+    public function dsrProfile()
+    {
+        return $this->hasOne(DsrProfile::class);
+    }
 }

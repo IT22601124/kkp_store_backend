@@ -3,6 +3,7 @@
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BranchController;
 use App\Http\Controllers\HealthController;
+use App\Http\Controllers\RepController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -20,6 +21,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/check-token', [AuthController::class, 'checkToken']);
     Route::post('/check-token', [AuthController::class, 'checkToken']);
     Route::apiResource('branches', BranchController::class);
+    Route::apiResource('reps', RepController::class);
 });
 
 
