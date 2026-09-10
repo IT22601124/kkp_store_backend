@@ -6,6 +6,7 @@ use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\HealthController;
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\RepController;
+use App\Http\Controllers\RouteController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\StockMovementController;
 use App\Http\Controllers\StockTransferController;
@@ -31,6 +32,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('reps', RepController::class);
     Route::apiResource('categories', CategoryController::class);
     Route::apiResource('items', ItemController::class);
+    Route::apiResource('routes', RouteController::class);
 
     // Stock & Inventory Management Routes
     Route::get('/stocks', [StockController::class, 'index']);
