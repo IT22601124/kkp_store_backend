@@ -7,6 +7,11 @@ use App\Http\Controllers\HealthController;
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\RepController;
 use App\Http\Controllers\RouteController;
+use App\Http\Controllers\ShopController;
+use App\Http\Controllers\ShopGpsLocationController;
+use App\Http\Controllers\DsrTripController;
+use App\Http\Controllers\TargetController;
+use App\Http\Controllers\PayrollController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\StockMovementController;
 use App\Http\Controllers\StockTransferController;
@@ -22,7 +27,19 @@ use Illuminate\Support\Facades\Route;
 
 // Public Endpoints
 Route::get('/health', [HealthController::class, 'checkHealth']);
-Route::post('/login', [AuthController::class, 'login']);
+Route::post('/login', [AuthController::class, 'login'])->name('login');
+Route::get('/login', function() { return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401); });
+
+// Public & Development Resource Routes
+Route::apiResource('shops', ShopController::class);
+Route::post('/shops/{id}/settle-credit', [ShopController::class, 'settleCredit']);
+Route::apiResource('gps-locations', ShopGpsLocationController::class);
+Route::get('/shops/{id}/gps-location', [ShopGpsLocationController::class, 'getByShop']);
+Route::post('/shops/{id}/gps-location', [ShopGpsLocationController::class, 'updateForShop']);
+
+Route::apiResource('dsr-trips', DsrTripController::class);
+Route::apiResource('targets', TargetController::class);
+Route::apiResource('payroll', PayrollController::class);
 
 // Authenticated Routes
 Route::middleware('auth:sanctum')->group(function () {
