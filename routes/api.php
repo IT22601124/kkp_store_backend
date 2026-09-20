@@ -17,6 +17,9 @@ use App\Http\Controllers\StockMovementController;
 use App\Http\Controllers\StockTransferController;
 use App\Http\Controllers\StockAdjustmentController;
 use App\Http\Controllers\GrnController;
+use App\Http\Controllers\v1\MobileRepAuthController;
+use App\Http\Controllers\v1\MobileShopController;
+use App\Http\Controllers\v1\UserShopController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -30,21 +33,49 @@ Route::get('/health', [HealthController::class, 'checkHealth']);
 Route::post('/login', [AuthController::class, 'login'])->name('login');
 Route::get('/login', function() { return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401); });
 
-// Public & Development Resource Routes
-Route::apiResource('shops', ShopController::class);
-Route::post('/shops/{id}/settle-credit', [ShopController::class, 'settleCredit']);
-Route::apiResource('gps-locations', ShopGpsLocationController::class);
-Route::get('/shops/{id}/gps-location', [ShopGpsLocationController::class, 'getByShop']);
-Route::post('/shops/{id}/gps-location', [ShopGpsLocationController::class, 'updateForShop']);
-
-Route::apiResource('dsr-trips', DsrTripController::class);
-Route::apiResource('targets', TargetController::class);
-Route::apiResource('payroll', PayrollController::class);
+// Mobile Rep Authentication Routes (v1 & standard)
+Route::post('/v1/mobile/rep/login', [MobileRepAuthController::class, 'login']);
+Route::post('/v1/rep/login', [MobileRepAuthController::class, 'login']);
+Route::get('/v1/mobile/rep/health', [MobileRepAuthController::class, 'checkHealth']);
 
 // Authenticated Routes
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/check-token', [AuthController::class, 'checkToken']);
     Route::post('/check-token', [AuthController::class, 'checkToken']);
+
+    // Mobile Rep Authenticated Routes
+    Route::get('/v1/mobile/rep/me', [MobileRepAuthController::class, 'me']);
+    Route::post('/v1/mobile/rep/logout', [MobileRepAuthController::class, 'logout']);
+    Route::get('/v1/mobile/rep/check-token', [MobileRepAuthController::class, 'checkToken']);
+    Route::post('/v1/mobile/rep/check-token', [MobileRepAuthController::class, 'checkToken']);
+
+    // Fetch Shops By created_by Route (Uses Authorization Bearer Token)
+    Route::get('/v1/shops/created-by', [UserShopController::class, 'getShopsByCreatedBy']);
+
+    // Mobile Shop Routes (v1 & standard)
+    Route::get('/v1/mobile/shops', [MobileShopController::class, 'index']);
+    Route::post('/v1/mobile/shops', [MobileShopController::class, 'store']);
+    Route::get('/v1/mobile/shops/{id}', [MobileShopController::class, 'show']);
+    Route::delete('/v1/mobile/shops/{id}', [MobileShopController::class, 'destroy']);
+
+    Route::get('/v1/shops', [MobileShopController::class, 'index']);
+    Route::post('/v1/shops', [MobileShopController::class, 'store']);
+    Route::get('/v1/shops/{id}', [MobileShopController::class, 'show']);
+    Route::delete('/v1/shops/{id}', [MobileShopController::class, 'destroy']);
+
+    Route::apiResource('shops', ShopController::class);
+    Route::post('/shops/{id}/settle-credit', [ShopController::class, 'settleCredit']);
+
+    // GPS Location Routes
+    Route::apiResource('gps-locations', ShopGpsLocationController::class);
+    Route::get('/shops/{id}/gps-location', [ShopGpsLocationController::class, 'getByShop']);
+    Route::post('/shops/{id}/gps-location', [ShopGpsLocationController::class, 'updateForShop']);
+
+    // Operational Resources
+    Route::apiResource('dsr-trips', DsrTripController::class);
+    Route::apiResource('targets', TargetController::class);
+    Route::apiResource('payroll', PayrollController::class);
+
     Route::apiResource('branches', BranchController::class);
     Route::apiResource('reps', RepController::class);
     Route::apiResource('categories', CategoryController::class);

@@ -22,7 +22,8 @@ class Shop extends Model
         'longitude',
         'credit_limit',
         'current_credit_balance',
-        'status'
+        'status',
+        'created_by'
     ];
 
     public function route()
@@ -33,5 +34,10 @@ class Shop extends Model
     public function gpsLocation()
     {
         return $this->hasOne(ShopGpsLocation::class, 'shop_id');
+    }
+
+    public function creator()
+    {
+        return $this->belongsTo(User::class, 'created_by');
     }
 }

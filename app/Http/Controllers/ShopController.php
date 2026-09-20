@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Shop;
 use App\Models\DistributionRoute;
+use App\Models\ShopGpsLocation;
 use Illuminate\Http\Request;
 
 class ShopController extends Controller
@@ -29,6 +30,8 @@ class ShopController extends Controller
             'current_credit_balance' => (float)$shop->current_credit_balance,
             'currentCreditBalance' => (float)$shop->current_credit_balance,
             'status' => strtoupper($shop->status ?? 'GOOD'),
+            'created_by' => $shop->created_by ? (int)$shop->created_by : null,
+            'createdBy' => $shop->created_by ? (int)$shop->created_by : null,
             'created_at' => $shop->created_at,
             'updated_at' => $shop->updated_at
         ];
@@ -48,16 +51,28 @@ class ShopController extends Controller
     public function store(Request $request)
     {
         $routeId = $request->input('route_id') ?? $request->input('routeId') ?? 1;
-        $shopCode = $request->input('shop_code') ?? $request->input('shopCode') ?? ('SHP-' . rand(100, 999));
+        $shopCode = $request->input('shop_code') ?? $request->input('shopCode');
         $shopName = $request->input('shop_name') ?? $request->input('shopName') ?? $request->input('name') ?? 'Retail Outlet';
         $ownerName = $request->input('owner_name') ?? $request->input('ownerName') ?? '';
-        $phone = $request->input('phone') ?? '';
+        $phone = $request->input('phone') ?? $request->input('contact_number') ?? $request->input('mobile') ?? '';
         $address = $request->input('address') ?? '';
         $lat = $request->input('latitude') ?? $request->input('lat');
         $lng = $request->input('longitude') ?? $request->input('lng');
+        $accuracy = $request->input('accuracy');
         $creditLimit = $request->input('credit_limit') ?? $request->input('creditLimit') ?? 100000;
         $currentCreditBalance = $request->input('current_credit_balance') ?? $request->input('currentCreditBalance') ?? 0;
         $status = $request->input('status') ?? 'GOOD';
+        $createdBy = $request->user() ? $request->user()->id : ($request->input('created_by') ?? $request->input('createdBy'));
+
+        if (empty($shopCode)) {
+            $count = Shop::count() + 1;
+            $prefix = 'SHP-' . date('Ymd') . '-';
+            $shopCode = $prefix . str_pad($count, 4, '0', STR_PAD_LEFT);
+            while (Shop::where('shop_code', $shopCode)->exists()) {
+                $count++;
+                $shopCode = $prefix . str_pad($count, 4, '0', STR_PAD_LEFT);
+            }
+        }
 
         $shop = Shop::create([
             'route_id' => $routeId,
@@ -66,12 +81,24 @@ class ShopController extends Controller
             'owner_name' => $ownerName,
             'phone' => $phone,
             'address' => $address,
-            'latitude' => $lat,
-            'longitude' => $lng,
-            'credit_limit' => $creditLimit,
-            'current_credit_balance' => $currentCreditBalance,
-            'status' => strtoupper($status)
+            'latitude' => $lat !== null ? (float)$lat : null,
+            'longitude' => $lng !== null ? (float)$lng : null,
+            'credit_limit' => (float)$creditLimit,
+            'current_credit_balance' => (float)$currentCreditBalance,
+            'status' => strtoupper($status),
+            'created_by' => $createdBy
         ]);
+
+        if ($lat !== null && $lng !== null) {
+            ShopGpsLocation::create([
+                'shop_id' => $shop->id,
+                'latitude' => (float)$lat,
+                'longitude' => (float)$lng,
+                'accuracy' => $accuracy !== null ? (float)$accuracy : null,
+                'address_text' => $address,
+                'is_verified' => true
+            ]);
+        }
 
         if ($routeId) {
             $route = DistributionRoute::find($routeId);
