@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\StockTransfer;
 use App\Models\StockTransferItem;
 use App\Models\Stock;
+use App\Models\RepStock;
 use App\Models\StockMovement;
 use App\Models\Item;
 use Illuminate\Http\Request;
@@ -116,11 +117,11 @@ class StockTransferController extends Controller
                         'notes' => "Stock issued to DSR Rep #{$validated['to_referrer_id']}"
                     ]);
 
-                    // B. Update Target DSR Rep Stock
-                    $targetStock = Stock::firstOrCreate(
+                    // B. Update Target DSR Rep Stock (RepStock table)
+                    $targetStock = RepStock::firstOrCreate(
                         [
+                            'rep_id' => $validated['to_referrer_id'],
                             'branch_id' => $validated['from_branch_id'],
-                            'referrer_id' => $validated['to_referrer_id'],
                             'item_id' => $item->id,
                         ],
                         [
@@ -134,10 +135,11 @@ class StockTransferController extends Controller
                     $targetQtyBefore = $targetStock->quantity;
                     $targetStock->quantity += $qty;
                     $targetStock->total_value = $targetStock->quantity * $targetStock->unit_price;
+                    $targetStock->last_synced_at = now();
                     $targetStock->save();
 
                     StockMovement::create([
-                        'stock_id' => $targetStock->id,
+                        'stock_id' => $sourceStock->id,
                         'item_id' => $item->id,
                         'branch_id' => $validated['from_branch_id'],
                         'referrer_id' => $validated['to_referrer_id'],
@@ -148,7 +150,7 @@ class StockTransferController extends Controller
                         'reference_type' => StockTransfer::class,
                         'reference_id' => $stockTransfer->id,
                         'performed_by' => auth()->user()->name ?? 'Branch Supervisor',
-                        'notes' => "Stock received from Branch Warehouse #{$validated['from_branch_id']}"
+                        'notes' => "Stock received by Rep from Branch Warehouse #{$validated['from_branch_id']}"
                     ]);
 
                     // C. Create Transfer Line Item Record

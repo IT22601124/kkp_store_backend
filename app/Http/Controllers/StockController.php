@@ -17,6 +17,8 @@ class StockController extends Controller
 
         if ($request->has('referrer_id')) {
             $query->where('referrer_id', $request->query('referrer_id'));
+        } else {
+            $query->whereNull('referrer_id');
         }
 
         if ($request->has('item_id')) {

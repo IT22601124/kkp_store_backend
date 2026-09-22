@@ -13,6 +13,7 @@ use App\Http\Controllers\DsrTripController;
 use App\Http\Controllers\TargetController;
 use App\Http\Controllers\PayrollController;
 use App\Http\Controllers\StockController;
+use App\Http\Controllers\RepStockController;
 use App\Http\Controllers\StockMovementController;
 use App\Http\Controllers\StockTransferController;
 use App\Http\Controllers\StockAdjustmentController;
@@ -85,6 +86,12 @@ Route::middleware('auth:sanctum')->group(function () {
     // Stock & Inventory Management Routes
     Route::get('/stocks', [StockController::class, 'index']);
     Route::get('/stocks/{id}', [StockController::class, 'show']);
+    Route::get('/rep-stocks', [RepStockController::class, 'index']);
+    Route::get('/rep-stocks/rep/{repId}', [RepStockController::class, 'getByRep']);
+    Route::get('/rep-stocks/{id}', [RepStockController::class, 'show']);
+    Route::get('/v1/rep-stocks', [RepStockController::class, 'index']);
+    Route::get('/v1/rep-stocks/rep/{repId}', [RepStockController::class, 'getByRep']);
+    Route::get('/v1/rep-stocks/{id}', [RepStockController::class, 'show']);
     Route::get('/stock-movements', [StockMovementController::class, 'index']);
     Route::apiResource('stock-transfers', StockTransferController::class);
     Route::apiResource('stock-adjustments', StockAdjustmentController::class);
