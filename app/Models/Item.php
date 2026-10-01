@@ -45,4 +45,12 @@ class Item extends Model
     {
         return $this->belongsTo(Category::class);
     }
+
+    /**
+     * Get warehouse and rep stock records for the item.
+     */
+    public function stocks()
+    {
+        return $this->hasMany(Stock::class, 'item_id');
+    }
 }

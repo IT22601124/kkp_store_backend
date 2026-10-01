@@ -16,9 +16,11 @@ use App\Http\Controllers\StockController;
 use App\Http\Controllers\RepStockController;
 use App\Http\Controllers\StockMovementController;
 use App\Http\Controllers\StockTransferController;
+use App\Http\Controllers\StockRequestController;
 use App\Http\Controllers\StockAdjustmentController;
 use App\Http\Controllers\GrnController;
 use App\Http\Controllers\v1\MobileRepAuthController;
+use App\Http\Controllers\v1\MobileItemController;
 use App\Http\Controllers\v1\MobileShopController;
 use App\Http\Controllers\v1\UserShopController;
 use Illuminate\Support\Facades\Route;
@@ -49,6 +51,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/v1/mobile/rep/logout', [MobileRepAuthController::class, 'logout']);
     Route::get('/v1/mobile/rep/check-token', [MobileRepAuthController::class, 'checkToken']);
     Route::post('/v1/mobile/rep/check-token', [MobileRepAuthController::class, 'checkToken']);
+
+    // Mobile Rep Item Routes
+    Route::get('/v1/mobile/items', [MobileItemController::class, 'index']);
+    Route::get('/v1/mobile/items/{id}', [MobileItemController::class, 'show']);
 
     // Fetch Shops By created_by Route (Uses Authorization Bearer Token)
     Route::get('/v1/shops/created-by', [UserShopController::class, 'getShopsByCreatedBy']);
@@ -94,6 +100,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/v1/rep-stocks/{id}', [RepStockController::class, 'show']);
     Route::get('/stock-movements', [StockMovementController::class, 'index']);
     Route::apiResource('stock-transfers', StockTransferController::class);
+    Route::get('/stock-requests', [StockRequestController::class, 'index']);
+    Route::post('/stock-requests', [StockRequestController::class, 'store']);
+    Route::get('/stock-requests/{stockRequest}', [StockRequestController::class, 'show']);
     Route::apiResource('stock-adjustments', StockAdjustmentController::class);
     Route::apiResource('grn', GrnController::class);
 });

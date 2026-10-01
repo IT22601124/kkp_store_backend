@@ -88,7 +88,6 @@ class AuthController extends Controller
     {
         try {
             $user = $request->user();
-
             return $this->successResponse(
                 [
                     'valid' => true,

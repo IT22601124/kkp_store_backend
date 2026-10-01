@@ -53,7 +53,7 @@ class RepController extends Controller
                 'phone' => 'required|string|max:50|unique:users,phone',
                 'password' => 'nullable|string|min:6',
                 'rep_code' => 'required|string|max:50|unique:dsr_profiles,rep_code',
-                'branch_id' => 'nullable|exists:branches,id',
+                'branch_id' => 'required|exists:branches,id',
                 'assigned_route_id' => 'nullable|integer',
                 'basic_salary' => 'nullable|numeric|min:0',
                 'bike_allowance' => 'nullable|numeric|min:0',
