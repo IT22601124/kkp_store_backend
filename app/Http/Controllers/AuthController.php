@@ -44,6 +44,8 @@ class AuthController extends Controller
 
             // 4. Create authentication token
             $token = $user->createToken('auth_token')->plainTextToken;
+            
+            
 
             // 5. Return successful response
             return $this->successResponse(

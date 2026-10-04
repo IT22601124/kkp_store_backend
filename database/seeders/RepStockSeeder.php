@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Models\AcceptedRequestItem;
 use App\Models\Item;
 use App\Models\RepStock;
 use App\Models\User;
@@ -14,14 +15,16 @@ class RepStockSeeder extends Seeder
      */
     public function run(): void
     {
-        $rep = User::where('email', 'test@example.com')->firstOrFail();
-        $branchId = $rep->dsrProfile?->branch_id;
-
-        if (!$branchId) {
-            $this->command?->warn('Skipping rep stock seed: test rep has no assigned branch.');
-
+        $rep = User::where('email', 'test@example.com')->first();
+        if (!$rep) {
             return;
         }
+
+        $repStock = RepStock::create([
+            'rep_id' => $rep->id,
+            'total_value' => 0.00,
+            'status' => 'ACCEPTED',
+        ]);
 
         $quantities = [
             'HUT-SIM-001' => 10,
@@ -30,31 +33,24 @@ class RepStockSeeder extends Seeder
             'HUT-RTR-4G' => 3,
         ];
 
+        $totalVal = 0;
         foreach ($quantities as $code => $quantity) {
             $item = Item::where('code', $code)->first();
-
             if (!$item) {
                 continue;
             }
 
-            RepStock::firstOrCreate(
-                [
-                    'rep_id' => $rep->id,
-                    'item_id' => $item->id,
-                    'batch_number' => 'REP-OPENING-2026-10',
-                ],
-                [
-                    'branch_id' => $branchId,
-                    'quantity' => $quantity,
-                    'reserved_quantity' => 0,
-                    'unit_cost' => $item->purchase_price,
-                    'unit_price' => $item->selling_price,
-                    'total_value' => $quantity * $item->selling_price,
-                    'status' => 'IN_STOCK',
-                    'last_synced_at' => now(),
-                    'last_audited_at' => now(),
-                ]
-            );
+            $subtotal = $quantity * $item->selling_price;
+            $totalVal += $subtotal;
+
+            AcceptedRequestItem::create([
+                'rep_stock_id' => $repStock->id,
+                'item_id' => $item->id,
+                'quantity' => $quantity,
+                'batch_number' => 'REP-OPENING-2026-10',
+            ]);
         }
+
+        $repStock->update(['total_value' => $totalVal]);
     }
 }

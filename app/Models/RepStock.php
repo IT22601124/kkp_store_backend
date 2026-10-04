@@ -13,27 +13,12 @@ class RepStock extends Model
 
     protected $fillable = [
         'rep_id',
-        'branch_id',
-        'item_id',
-        'quantity',
-        'reserved_quantity',
-        'unit_cost',
-        'unit_price',
         'total_value',
-        'batch_number',
         'status',
-        'last_synced_at',
-        'last_audited_at'
     ];
 
     protected $casts = [
-        'quantity' => 'integer',
-        'reserved_quantity' => 'integer',
-        'unit_cost' => 'decimal:2',
-        'unit_price' => 'decimal:2',
         'total_value' => 'decimal:2',
-        'last_synced_at' => 'datetime',
-        'last_audited_at' => 'datetime'
     ];
 
     public function rep()
@@ -41,13 +26,8 @@ class RepStock extends Model
         return $this->belongsTo(User::class, 'rep_id');
     }
 
-    public function branch()
+    public function items()
     {
-        return $this->belongsTo(Branch::class, 'branch_id');
-    }
-
-    public function item()
-    {
-        return $this->belongsTo(Item::class, 'item_id');
+        return $this->hasMany(AcceptedRequestItem::class, 'rep_stock_id');
     }
 }

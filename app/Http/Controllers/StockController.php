@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Stock;
 use Illuminate\Http\Request;
-
+use Throwable;
 class StockController extends Controller
 {
     public function index(Request $request)
@@ -49,5 +49,32 @@ class StockController extends Controller
             'success' => true,
             'data' => $stock
         ]);
+    }
+
+    public function  fetchStockByBranch(Request $request)
+    {
+        try {
+            $branch_id = $request->user()->branch_id ?? $request->user()->dsrProfile?->branch_id ?? $request->query('branch_id');
+            $query = Stock::with(['branch', 'referrer', 'item']);
+
+            if ($branch_id) {
+                $query->where('branch_id', $branch_id);
+            }
+
+            $stocks = $query->orderBy('updated_at', 'desc')->get();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Stock balances retrieved successfully',
+                'data' => $stocks
+            ]);
+            
+        }catch(Throwable $th){
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to retrieve stock balances',
+                'data' => $th->getMessage()
+            ]);
+        }
     }
 }

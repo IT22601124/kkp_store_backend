@@ -6,6 +6,7 @@ use App\Http\Traits\ApiResponse;
 use App\Models\StockRequest;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 class StockRequestController extends Controller
@@ -89,5 +90,34 @@ class StockRequestController extends Controller
             $stockRequest->load(['rep', 'branch', 'items.item']),
             'Stock request retrieved successfully'
         );
+    }
+
+    public function updateStatus(Request $request)
+    {
+        Log::info('requested data ', $request->all());
+
+        $validated = $request->validate([
+            'status' => ['required', 'in:PENDING,APPROVED,REJECTED,ACCEPTED'],
+            'request_id' => ['required', 'integer', 'exists:stock_requests,id'],
+        ]);
+
+        try {
+            $stockRequest = StockRequest::findOrFail($validated['request_id']);
+
+            if ($request->user()->role === 'DSR_REP' && $stockRequest->rep_id !== $request->user()->id) {
+                return $this->errorResponse('Stock request not found', 404);
+            }
+
+            $targetStatus = $validated['status'] === 'ACCEPTED' ? 'APPROVED' : $validated['status'];
+            $stockRequest->update(['status' => $targetStatus]);
+            $stockRequest->load(['rep', 'branch', 'items.item']);
+
+            return $this->successResponse(
+                $stockRequest,
+                'Stock request status updated successfully'
+            );
+        } catch (Throwable $th) {
+            return $this->errorResponse('Failed to update stock request status', 500, $th->getMessage());
+        }
     }
 }

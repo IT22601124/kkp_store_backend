@@ -91,18 +91,28 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Stock & Inventory Management Routes
     Route::get('/stocks', [StockController::class, 'index']);
+    Route::get('/stocks/branch', [StockController::class, 'fetchStockByBranch']);
     Route::get('/stocks/{id}', [StockController::class, 'show']);
+    Route::get('/v1/stocks', [StockController::class, 'index']);
+    Route::get('/v1/stocks/branch', [StockController::class, 'fetchStockByBranch']);
+    Route::get('/v1/stocks/{id}', [StockController::class, 'show']);
     Route::get('/rep-stocks', [RepStockController::class, 'index']);
     Route::get('/rep-stocks/rep/{repId}', [RepStockController::class, 'getByRep']);
     Route::get('/rep-stocks/{id}', [RepStockController::class, 'show']);
     Route::get('/v1/rep-stocks', [RepStockController::class, 'index']);
     Route::get('/v1/rep-stocks/rep/{repId}', [RepStockController::class, 'getByRep']);
     Route::get('/v1/rep-stocks/{id}', [RepStockController::class, 'show']);
+    Route::post('/v1/rep-stocks/issue-stock', [RepStockController::class,'issueStockForRep']);
     Route::get('/stock-movements', [StockMovementController::class, 'index']);
     Route::apiResource('stock-transfers', StockTransferController::class);
     Route::get('/stock-requests', [StockRequestController::class, 'index']);
     Route::post('/stock-requests', [StockRequestController::class, 'store']);
     Route::get('/stock-requests/{stockRequest}', [StockRequestController::class, 'show']);
+    Route::get('/v1/stock-requests', [StockRequestController::class, 'index']);
+    Route::post('/v1/stock-requests', [StockRequestController::class, 'store']);
+    Route::get('/v1/stock-requests/{stockRequest}', [StockRequestController::class, 'show']);
+    Route::post('/v1/stock-requests/update-status', [StockRequestController::class, 'updateStatus']);
     Route::apiResource('stock-adjustments', StockAdjustmentController::class);
     Route::apiResource('grn', GrnController::class);
+
 });

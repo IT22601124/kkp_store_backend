@@ -3,8 +3,18 @@
 namespace App\Http\Controllers;
 
 use App\Http\Traits\ApiResponse;
+use App\Models\AcceptedRequestItem;
+use App\Models\Item;
 use App\Models\RepStock;
+use App\Models\Stock;
+use App\Models\StockMovement;
+use App\Models\StockRequest;
+use App\Models\StockTransfer;
+use App\Models\StockTransferItem;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Validator;
 use Throwable;
 
 class RepStockController extends Controller
@@ -17,18 +27,10 @@ class RepStockController extends Controller
     public function index(Request $request)
     {
         try {
-            $query = RepStock::with(['rep', 'branch', 'item']);
+            $query = RepStock::with(['rep', 'items.item']);
 
             if ($request->has('rep_id')) {
                 $query->where('rep_id', $request->query('rep_id'));
-            }
-
-            if ($request->has('branch_id')) {
-                $query->where('branch_id', $request->query('branch_id'));
-            }
-
-            if ($request->has('item_id')) {
-                $query->where('item_id', $request->query('item_id'));
             }
 
             if ($request->has('status')) {
@@ -58,7 +60,7 @@ class RepStockController extends Controller
     {
         try {
             $repStocks = RepStock::where('rep_id', $repId)
-                ->with(['branch', 'item'])
+                ->with(['rep', 'items.item'])
                 ->orderBy('updated_at', 'desc')
                 ->get();
 
@@ -82,7 +84,7 @@ class RepStockController extends Controller
     public function show($id)
     {
         try {
-            $repStock = RepStock::with(['rep', 'branch', 'item'])->find($id);
+            $repStock = RepStock::with(['rep', 'items.item'])->find($id);
 
             if (!$repStock) {
                 return $this->errorResponse('Rep stock record not found', 404);
@@ -99,6 +101,144 @@ class RepStockController extends Controller
                 500,
                 $th->getMessage()
             );
+        }
+    }
+
+    /**
+     * Issue stock for sales rep and fulfill stock request.
+     */
+    public function issueStockForRep(Request $request)
+    {
+        try {
+            $validator = Validator::make($request->all(), [
+                'request_id' => 'required|integer|exists:stock_requests,id',
+                'items' => 'required|array|min:1',
+                'items.*.item_id' => 'required|integer|exists:items,id',
+                'items.*.quantity' => 'required|integer|min:1',
+                'items.*.batch_number' => 'nullable|string',
+            ]);
+ 
+            if ($validator->fails()) {
+                return $this->errorResponse('Validation failed', 422, $validator->errors()->first());
+            }
+
+            $user = $request->user();
+            $stockRequest = StockRequest::findOrFail($request->request_id);
+            $rep_id = $stockRequest->rep_id;
+            $branch_id = $stockRequest->branch_id ?? ($user->dsrProfile?->branch_id ?? 1);
+               try {
+                    $stockRequest->status = 'APPROVED';
+                    $stockRequest->save();
+                } catch (Throwable $th) {
+                    Log::info('errrrrrrrrrrrrrrrrrr', [$th]);
+                }
+            $repStock = DB::transaction(function () use ($request, $stockRequest, $user, $rep_id, $branch_id) {
+                // 1. Update stock_requests status to APPROVED
+             
+
+
+                // 2. Pre-calculate totals and line items
+                $totalValue = 0;
+                $lineDetails = [];
+
+                foreach ($request->items as $itemData) {
+                    $item = Item::findOrFail($itemData['item_id']);
+                    $qty = (int) $itemData['quantity'];
+                    $unitPrice = (float) $item->selling_price;
+                    $subtotal = $qty * $unitPrice;
+                    $totalValue += $subtotal;
+
+                    $lineDetails[] = [
+                        'item' => $item,
+                        'qty' => $qty,
+                        'unitPrice' => $unitPrice,
+                        'subtotal' => $subtotal,
+                        'batch_number' => $itemData['batch_number'] ?? null,
+                    ];
+                }
+
+                // 3. Create Stock Transfer audit header
+                $transferCode = 'TRF-' . str_pad(StockTransfer::count() + 1, 5, '0', STR_PAD_LEFT);
+                $stockTransfer = StockTransfer::create([
+                    'transfer_code' => $transferCode,
+                    'from_branch_id' => $branch_id,
+                    'to_referrer_id' => $rep_id,
+                    'transfer_date' => now(),
+                    'status' => 'ISSUED',
+                    'total_value' => $totalValue,
+                    'notes' => 'Stock issued for Request #' . $stockRequest->request_code,
+                ]);
+
+                // 4. Update Main Warehouse Stock & Movement Audit Logs
+                foreach ($lineDetails as $line) {
+                    $item = $line['item'];
+                    $qty = $line['qty'];
+
+                    $mainStock = Stock::firstOrCreate(
+                        [
+                            'branch_id' => $branch_id,
+                            'referrer_id' => null,
+                            'item_id' => $item->id,
+                        ],
+                        [
+                            'quantity' => 0,
+                            'unit_cost' => $item->purchase_price,
+                            'unit_price' => $item->selling_price,
+                            'total_value' => 0.00,
+                        ]
+                    );
+
+                    $sourceQtyBefore = $mainStock->quantity;
+                    $mainStock->quantity -= $qty;
+                    $mainStock->total_value = $mainStock->quantity * $mainStock->unit_price;
+                    $mainStock->save();
+
+                    StockTransferItem::create([
+                        'stock_transfer_id' => $stockTransfer->id,
+                        'item_id' => $item->id,
+                        'quantity' => $qty,
+                        'unit_price' => $line['unitPrice'],
+                        'subtotal' => $line['subtotal'],
+                    ]);
+
+                    StockMovement::create([
+                        'stock_id' => $mainStock->id,
+                        'item_id' => $item->id,
+                        'branch_id' => $branch_id,
+                        'referrer_id' => null,
+                        'movement_type' => 'TRANSFER_OUT',
+                        'quantity_before' => $sourceQtyBefore,
+                        'quantity_change' => -$qty,
+                        'quantity_after' => $mainStock->quantity,
+                        'reference_type' => StockTransfer::class,
+                        'reference_id' => $stockTransfer->id,
+                        'performed_by' => $user->name ?? 'Branch Supervisor',
+                        'notes' => "Stock issued to Rep #{$rep_id} for Request #{$stockRequest->request_code}",
+                    ]);
+                }
+
+                // 5. Create RepStock and AcceptedRequestItem records
+                $repStock = RepStock::create([
+                    'rep_id' => $rep_id,
+                    'total_value' => $totalValue,
+                    'status' => 'APPROVED',
+                ]);
+
+                foreach ($lineDetails as $line) {
+                    AcceptedRequestItem::create([
+                        'rep_stock_id' => $repStock->id,
+                        'item_id' => $line['item']->id,
+                        'quantity' => $line['qty'],
+                        'batch_number' => $line['batch_number'],
+                    ]);
+                }
+
+                return $repStock->load(['rep', 'items.item']);
+            });
+
+            return $this->successResponse($repStock, 'Stock issued to rep successfully', 200);
+        } catch (Throwable $th) {
+            return $this->errorResponse('Failed to issue stock to rep: ' . $th->getMessage(), 500);
         }
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\AcceptedRequestItem;
 use App\Models\StockTransfer;
 use App\Models\StockTransferItem;
 use App\Models\Stock;
@@ -77,6 +78,13 @@ class StockTransferController extends Controller
                     'notes' => $validated['notes'] ?? null
                 ]);
 
+                // Create RepStock record
+                $repStock = RepStock::create([
+                    'rep_id' => $validated['to_referrer_id'],
+                    'total_value' => $totalValue,
+                    'status' => 'ACCEPTED',
+                ]);
+
                 // 3. Process each item: update source & target stocks + movement audit logs
                 foreach ($lineDetails as $line) {
                     $item = $line['item'];
@@ -117,26 +125,13 @@ class StockTransferController extends Controller
                         'notes' => "Stock issued to DSR Rep #{$validated['to_referrer_id']}"
                     ]);
 
-                    // B. Update Target DSR Rep Stock (RepStock table)
-                    $targetStock = RepStock::firstOrCreate(
-                        [
-                            'rep_id' => $validated['to_referrer_id'],
-                            'branch_id' => $validated['from_branch_id'],
-                            'item_id' => $item->id,
-                        ],
-                        [
-                            'quantity' => 0,
-                            'unit_cost' => $item->purchase_price,
-                            'unit_price' => $item->selling_price,
-                            'total_value' => 0.00
-                        ]
-                    );
-
-                    $targetQtyBefore = $targetStock->quantity;
-                    $targetStock->quantity += $qty;
-                    $targetStock->total_value = $targetStock->quantity * $targetStock->unit_price;
-                    $targetStock->last_synced_at = now();
-                    $targetStock->save();
+                    // B. Update Target DSR Rep Stock via AcceptedRequestItem
+                    AcceptedRequestItem::create([
+                        'rep_stock_id' => $repStock->id,
+                        'item_id' => $item->id,
+                        'quantity' => $qty,
+                        'batch_number' => null,
+                    ]);
 
                     StockMovement::create([
                         'stock_id' => $sourceStock->id,
@@ -144,9 +139,9 @@ class StockTransferController extends Controller
                         'branch_id' => $validated['from_branch_id'],
                         'referrer_id' => $validated['to_referrer_id'],
                         'movement_type' => 'TRANSFER_IN',
-                        'quantity_before' => $targetQtyBefore,
+                        'quantity_before' => 0,
                         'quantity_change' => $qty,
-                        'quantity_after' => $targetStock->quantity,
+                        'quantity_after' => $qty,
                         'reference_type' => StockTransfer::class,
                         'reference_id' => $stockTransfer->id,
                         'performed_by' => auth()->user()->name ?? 'Branch Supervisor',
@@ -175,6 +170,96 @@ class StockTransferController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to process stock transfer: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function show($id)
+    {
+        try {
+            $transfer = StockTransfer::with(['fromBranch', 'toReferrer', 'items.item'])->find($id);
+
+            if (!$transfer) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Stock transfer not found'
+                ], 404);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Stock transfer retrieved successfully',
+                'data' => $transfer
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to retrieve stock transfer: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function update(Request $request, $id)
+    {
+        try {
+            $transfer = StockTransfer::find($id);
+
+            if (!$transfer) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Stock transfer not found'
+                ], 404);
+            }
+
+            $validated = $request->validate([
+                'status' => 'nullable|string',
+                'notes' => 'nullable|string',
+                'from_branch_id' => 'nullable|exists:branches,id',
+                'to_referrer_id' => 'nullable|exists:users,id',
+                'total_value' => 'nullable|numeric'
+            ]);
+
+            $transfer->update(array_filter($validated, function ($value) {
+                return $value !== null;
+            }));
+
+            $transfer->load(['fromBranch', 'toReferrer', 'items.item']);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Stock transfer updated successfully',
+                'data' => $transfer
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update stock transfer: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function destroy($id)
+    {
+        try {
+            $transfer = StockTransfer::find($id);
+
+            if (!$transfer) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Stock transfer not found'
+                ], 404);
+            }
+
+            $transfer->delete();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Stock transfer deleted successfully'
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to delete stock transfer: ' . $e->getMessage()
             ], 500);
         }
     }
