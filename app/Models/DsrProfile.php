@@ -61,4 +61,8 @@ class DsrProfile extends Model
     {
         return $this->belongsTo(Branch::class, 'branch_id');
     }
+    public function route(){
+        return $this->belongsTo(Route::class,'assigned_route_id');
+    }
+
 }

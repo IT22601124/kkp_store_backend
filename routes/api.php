@@ -59,6 +59,12 @@ Route::middleware('auth:sanctum')->group(function () {
     // Fetch Shops By created_by Route (Uses Authorization Bearer Token)
     Route::get('/v1/shops/created-by', [UserShopController::class, 'getShopsByCreatedBy']);
 
+    // Fetch Shops By Route (Uses query route_id / URL parameter or assigned_route_id of rep)
+    Route::get('/v1/shops/route', [MobileShopController::class, 'getShopsByRoute']);
+    Route::get('/v1/shops/route/{routeId}', [MobileShopController::class, 'getShopsByRoute']);
+    Route::get('/v1/mobile/shops/route', [MobileShopController::class, 'getShopsByRoute']);
+    Route::get('/v1/mobile/shops/route/{routeId}', [MobileShopController::class, 'getShopsByRoute']);
+
     // Mobile Shop Routes (v1 & standard)
     Route::get('/v1/mobile/shops', [MobileShopController::class, 'index']);
     Route::post('/v1/mobile/shops', [MobileShopController::class, 'store']);
@@ -88,6 +94,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('categories', CategoryController::class);
     Route::apiResource('items', ItemController::class);
     Route::apiResource('routes', RouteController::class);
+    Route::get('/v1/routes', [RouteController::class, 'index']);
+    Route::get('/v1/mobile/routes', [RouteController::class, 'index']);
 
     // Stock & Inventory Management Routes
     Route::get('/stocks', [StockController::class, 'index']);

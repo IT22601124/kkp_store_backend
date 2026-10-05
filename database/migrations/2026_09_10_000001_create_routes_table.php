@@ -14,7 +14,6 @@ return new class extends Migration
             $table->string('route_name');
             $table->string('route_code')->nullable();
             $table->text('description')->nullable();
-            $table->integer('total_shops_count')->default(0);
             $table->unsignedBigInteger('assigned_referrer_id')->nullable();
             $table->timestamps();
         });

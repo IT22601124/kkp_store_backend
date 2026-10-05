@@ -168,7 +168,7 @@ class MobileRepAuthController extends Controller
                 );
             }
 
-            $user->load(['dsrProfile.branch']);
+            $user->load(['dsrProfile.branch','dsrProfile.route']);
 
             return $this->successResponse(
                 [

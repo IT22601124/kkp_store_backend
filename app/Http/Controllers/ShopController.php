@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Shop;
-use App\Models\DistributionRoute;
+use App\Models\Route;
 use App\Models\ShopGpsLocation;
 use Illuminate\Http\Request;
 
@@ -100,13 +100,6 @@ class ShopController extends Controller
             ]);
         }
 
-        if ($routeId) {
-            $route = DistributionRoute::find($routeId);
-            if ($route) {
-                $route->increment('total_shops_count');
-            }
-        }
-
         return response()->json([
             'success' => true,
             'message' => 'Shop outlet created successfully',
@@ -183,15 +176,7 @@ class ShopController extends Controller
             ], 404);
         }
 
-        $routeId = $shop->route_id;
         $shop->delete();
-
-        if ($routeId) {
-            $route = DistributionRoute::find($routeId);
-            if ($route && $route->total_shops_count > 0) {
-                $route->decrement('total_shops_count');
-            }
-        }
 
         return response()->json([
             'success' => true,

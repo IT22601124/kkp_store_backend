@@ -64,8 +64,54 @@ class RepStockController extends Controller
                 ->orderBy('updated_at', 'desc')
                 ->get();
 
+            if ($repStocks->isEmpty()) {
+                return $this->successResponse(
+                    [],
+                    "Stock balances for rep #{$repId} retrieved successfully",
+                    200
+                );
+            }
+
+            $allItems = $repStocks->pluck('items')->flatten();
+
+            $consolidatedItems = $allItems->groupBy('item_id')->map(function ($group) {
+                $firstItem = $group->first();
+                $totalQty = (int) $group->sum('quantity');
+                $item = $firstItem->item;
+                $unitPrice = $item ? (float) $item->selling_price : 0;
+                $totalValue = round($totalQty * $unitPrice, 2);
+
+                $batchNumbers = $group->pluck('batch_number')->filter()->unique()->values()->all();
+
+                return [
+                    'id' => $firstItem->id,
+                    'rep_stock_id' => $firstItem->rep_stock_id,
+                    'item_id' => (int) $firstItem->item_id,
+                    'quantity' => $totalQty,
+                    'total_value' => $totalValue,
+                    'batch_number' => !empty($batchNumbers) ? implode(', ', $batchNumbers) : null,
+                    'batch_numbers' => $batchNumbers,
+                    'item' => $item,
+                    'created_at' => $firstItem->created_at,
+                    'updated_at' => $firstItem->updated_at,
+                ];
+            })->values();
+
+            $latestRepStock = $repStocks->first();
+
+            $consolidatedRepStock = [
+                'id' => $latestRepStock->id,
+                'rep_id' => (int) $repId,
+                'total_value' => (float) $consolidatedItems->sum('total_value'),
+                'status' => $latestRepStock->status,
+                'created_at' => $latestRepStock->created_at,
+                'updated_at' => $latestRepStock->updated_at,
+                'rep' => $latestRepStock->rep,
+                'items' => $consolidatedItems,
+            ];
+
             return $this->successResponse(
-                $repStocks,
+                [$consolidatedRepStock],
                 "Stock balances for rep #{$repId} retrieved successfully",
                 200
             );

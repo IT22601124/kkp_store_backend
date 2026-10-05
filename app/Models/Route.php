@@ -5,7 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-class DistributionRoute extends Model
+class Route extends Model
 {
     use HasFactory;
 
@@ -16,8 +16,7 @@ class DistributionRoute extends Model
         'route_name',
         'route_code',
         'description',
-        'total_shops_count',
-        'assigned_referrer_id'
+        'assigned_referrer_id',
     ];
 
     public function branch()
@@ -28,5 +27,10 @@ class DistributionRoute extends Model
     public function referrer()
     {
         return $this->belongsTo(User::class, 'assigned_referrer_id');
+    }
+
+    public function shops()
+    {
+        return $this->hasMany(Shop::class, 'route_id');
     }
 }

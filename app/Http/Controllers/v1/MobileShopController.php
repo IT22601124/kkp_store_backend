@@ -104,6 +104,7 @@ class MobileShopController extends Controller
             $lng = $request->input('longitude') ?? $request->input('lng');
             $accuracy = $request->input('accuracy');
             $creditLimit = $request->input('credit_limit') ?? $request->input('creditLimit') ?? 100000.00;
+            $currentCreditBalance = $request->input('current_credit_balance') ?? $request->input('currentCreditBalance') ?? 0.00;
             $status = $request->input('status') ?? 'GOOD';
             $createdBy = $request->user() ? $request->user()->id : ($request->input('created_by') ?? $request->input('createdBy'));
 
@@ -142,7 +143,7 @@ class MobileShopController extends Controller
                 'latitude' => $lat !== null ? (float)$lat : null,
                 'longitude' => $lng !== null ? (float)$lng : null,
                 'credit_limit' => (float)$creditLimit,
-                'current_credit_balance' => 0.00,
+                'current_credit_balance' => (float)$currentCreditBalance,
                 'status' => strtoupper($status),
                 'created_by' => $createdBy
             ]);
@@ -226,7 +227,7 @@ class MobileShopController extends Controller
             }
 
             $routeId = $shop->route_id;
-            
+
             // Delete associated GPS location records if any
             ShopGpsLocation::where('shop_id', $id)->delete();
 
