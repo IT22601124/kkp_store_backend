@@ -257,4 +257,21 @@ class MobileShopController extends Controller
             );
         }
     }
+
+    public function getShopsByRoute(Request $request){
+        try{
+            $allShop = Shop::where('route_id', $request->route_id)->get();
+            if (!$allShop) {
+                return $this->errorResponse('Shop not found', 404);
+            }
+            return $this->successResponse(
+                $allShop,
+                'Shop details retrieved successfully',
+                200
+            );
+        }
+        catch(Throwable $th){
+            return $this->errorResponse('',500);
+        }
+    }
 }

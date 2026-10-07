@@ -40,4 +40,9 @@ class Shop extends Model
     {
         return $this->belongsTo(User::class, 'created_by');
     }
+
+    public function sales()
+    {
+        return $this->hasMany(Sale::class, 'shop_id');
+    }
 }

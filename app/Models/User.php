@@ -58,4 +58,12 @@ class User extends Authenticatable
     {
         return $this->hasOne(DsrProfile::class);
     }
+
+    /**
+     * Get the sales associated with the rep/user.
+     */
+    public function sales()
+    {
+        return $this->hasMany(Sale::class, 'rep_id');
+    }
 }

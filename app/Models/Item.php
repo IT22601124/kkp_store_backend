@@ -53,4 +53,12 @@ class Item extends Model
     {
         return $this->hasMany(Stock::class, 'item_id');
     }
+
+    /**
+     * Get sale items for the item.
+     */
+    public function salesItems()
+    {
+        return $this->hasMany(SaleItem::class, 'item_id');
+    }
 }

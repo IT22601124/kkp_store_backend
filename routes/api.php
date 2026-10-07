@@ -19,10 +19,12 @@ use App\Http\Controllers\StockTransferController;
 use App\Http\Controllers\StockRequestController;
 use App\Http\Controllers\StockAdjustmentController;
 use App\Http\Controllers\GrnController;
+use App\Http\Controllers\SaleController;
 use App\Http\Controllers\v1\MobileRepAuthController;
 use App\Http\Controllers\v1\MobileItemController;
 use App\Http\Controllers\v1\MobileShopController;
 use App\Http\Controllers\v1\UserShopController;
+use App\Http\Controllers\v1\MobileSaleController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -61,10 +63,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Fetch Shops By Route (Uses query route_id / URL parameter or assigned_route_id of rep)
     Route::get('/v1/shops/route', [MobileShopController::class, 'getShopsByRoute']);
-    Route::get('/v1/shops/route/{routeId}', [MobileShopController::class, 'getShopsByRoute']);
-    Route::get('/v1/mobile/shops/route', [MobileShopController::class, 'getShopsByRoute']);
-    Route::get('/v1/mobile/shops/route/{routeId}', [MobileShopController::class, 'getShopsByRoute']);
-
+    
     // Mobile Shop Routes (v1 & standard)
     Route::get('/v1/mobile/shops', [MobileShopController::class, 'index']);
     Route::post('/v1/mobile/shops', [MobileShopController::class, 'store']);
@@ -122,5 +121,15 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/v1/stock-requests/update-status', [StockRequestController::class, 'updateStatus']);
     Route::apiResource('stock-adjustments', StockAdjustmentController::class);
     Route::apiResource('grn', GrnController::class);
+
+    // Sales & Sales Items Routes
+    Route::get('/v1/mobile/sales', [MobileSaleController::class, 'index']);
+    Route::post('/v1/mobile/sales', [MobileSaleController::class, 'store']);
+    Route::get('/v1/mobile/sales/{id}', [MobileSaleController::class, 'show']);
+
+    Route::get('/v1/sales', [SaleController::class, 'index']);
+    Route::post('/v1/sales', [SaleController::class, 'store']);
+    Route::get('/v1/sales/{id}', [SaleController::class, 'show']);
+    Route::apiResource('sales', SaleController::class);
 
 });
