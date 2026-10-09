@@ -65,6 +65,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/v1/shops/route', [MobileShopController::class, 'getShopsByRoute']);
     
     // Mobile Shop Routes (v1 & standard)
+    Route::get('/v1/mobile/shops/today-visited', [MobileShopController::class, 'getTodayVisitedShops']);
+    Route::get('/v1/shops/today-visited', [MobileShopController::class, 'getTodayVisitedShops']);
+    Route::get('/v1/mobile/shops/credit', [MobileShopController::class, 'getCreditShops']);
+    Route::get('/v1/shops/credit', [MobileShopController::class, 'getCreditShops']);
+    Route::post('/v1/mobile/shops/{id}/settle-credit', [ShopController::class, 'settleCredit']);
     Route::get('/v1/mobile/shops', [MobileShopController::class, 'index']);
     Route::post('/v1/mobile/shops', [MobileShopController::class, 'store']);
     Route::get('/v1/mobile/shops/{id}', [MobileShopController::class, 'show']);
@@ -123,6 +128,15 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('grn', GrnController::class);
 
     // Sales & Sales Items Routes
+    Route::get('/v1/mobile/daily-settlement', [MobileSaleController::class, 'getDailySettlementSheet']);
+    Route::post('/v1/mobile/daily-settlement', [MobileSaleController::class, 'storeDailySettlementSheet']);
+    Route::get('/v1/daily-settlement', [MobileSaleController::class, 'getDailySettlementSheet']);
+    Route::post('/v1/daily-settlement', [MobileSaleController::class, 'storeDailySettlementSheet']);
+    Route::get('/v1/daily-settlements', [MobileSaleController::class, 'getAllDailySettlements']);
+    Route::post('/v1/daily-settlements/{id}/status', [MobileSaleController::class, 'updateDailySettlementStatus']);
+    Route::put('/v1/daily-settlements/{id}/status', [MobileSaleController::class, 'updateDailySettlementStatus']);
+    Route::get('/v1/mobile/shops/{id}/credit-sales', [MobileSaleController::class, 'getShopCreditSales']);
+    Route::get('/v1/shops/{id}/credit-sales', [MobileSaleController::class, 'getShopCreditSales']);
     Route::get('/v1/mobile/sales', [MobileSaleController::class, 'index']);
     Route::post('/v1/mobile/sales', [MobileSaleController::class, 'store']);
     Route::get('/v1/mobile/sales/{id}', [MobileSaleController::class, 'show']);

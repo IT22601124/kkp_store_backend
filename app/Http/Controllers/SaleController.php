@@ -6,6 +6,7 @@ use App\Http\Traits\ApiResponse;
 use App\Models\Item;
 use App\Models\Sale;
 use App\Models\SaleItem;
+use App\Models\SalePayment;
 use App\Models\Shop;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -22,7 +23,7 @@ class SaleController extends Controller
     public function index(Request $request)
     {
         try {
-            $query = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item']);
+            $query = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments']);
 
             if ($request->has('rep_id')) {
                 $query->where('rep_id', $request->query('rep_id'));
@@ -73,7 +74,7 @@ class SaleController extends Controller
     }
 
     /**
-     * Store a newly created sale with sale items.
+     * Store a newly created sale with sale items and payment breakdowns.
      */
     public function store(Request $request)
     {
@@ -84,7 +85,7 @@ class SaleController extends Controller
             'branch_id' => 'nullable|integer|exists:branches,id',
             'dsr_trip_id' => 'nullable|integer|exists:dsr_trips,id',
             'sale_date' => 'nullable|date',
-            'payment_type' => 'nullable|string|in:CASH,CREDIT,CHEQUE,ONLINE',
+            'payment_type' => 'nullable|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD,SPLIT',
             'status' => 'nullable|string|in:PENDING,COMPLETED,CANCELLED',
             'discount' => 'nullable|numeric|min:0',
             'tax' => 'nullable|numeric|min:0',
@@ -96,6 +97,12 @@ class SaleController extends Controller
             'items.*.unit_price' => 'nullable|numeric|min:0',
             'items.*.discount' => 'nullable|numeric|min:0',
             'items.*.batch_number' => 'nullable|string',
+            'payments' => 'nullable|array',
+            'payments.*.payment_type' => 'required_with:payments|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD',
+            'payments.*.amount' => 'required_with:payments|numeric|min:0',
+            'payments.*.reference_number' => 'nullable|string',
+            'payments.*.payment_date' => 'nullable|date',
+            'payments.*.notes' => 'nullable|string',
         ]);
 
         if ($validator->fails()) {
@@ -134,10 +141,50 @@ class SaleController extends Controller
                 $tax = (float) ($request->input('tax') ?? 0.00);
                 $totalAmount = max(0, $calculatedSubtotal - $overallDiscount + $tax);
 
-                $paymentType = strtoupper($request->input('payment_type', 'CASH'));
-                $paidAmount = (float) ($request->input('paid_amount') ?? ($paymentType === 'CREDIT' ? 0.00 : $totalAmount));
-                $dueAmount = max(0, $totalAmount - $paidAmount);
+                $hasPaymentsArray = $request->filled('payments') && is_array($request->input('payments')) && count($request->input('payments')) > 0;
+                $paymentType = strtoupper($request->input('payment_type', $hasPaymentsArray ? 'SPLIT' : 'CASH'));
 
+                $paidAmount = 0.00;
+                $paymentRecords = [];
+
+                if ($hasPaymentsArray) {
+                    foreach ($request->input('payments') as $p) {
+                        $pType = strtoupper($p['payment_type']);
+                        $pAmount = (float) $p['amount'];
+                        $pRef = $p['reference_number'] ?? null;
+                        $pDate = $p['payment_date'] ?? $request->input('sale_date') ?? now();
+                        $pNotes = $p['notes'] ?? null;
+
+                        if ($pType !== 'CREDIT') {
+                            $paidAmount += $pAmount;
+                        }
+
+                        $paymentRecords[] = [
+                            'payment_type' => $pType,
+                            'amount' => $pAmount,
+                            'reference_number' => $pRef,
+                            'payment_date' => $pDate,
+                            'notes' => $pNotes,
+                        ];
+                    }
+
+                    if ($request->filled('paid_amount')) {
+                        $paidAmount = (float) $request->input('paid_amount');
+                    }
+                } else {
+                    $paidAmount = (float) ($request->input('paid_amount') ?? ($paymentType === 'CREDIT' ? 0.00 : $totalAmount));
+                    if ($paidAmount > 0) {
+                        $paymentRecords[] = [
+                            'payment_type' => $paymentType,
+                            'amount' => $paidAmount,
+                            'reference_number' => null,
+                            'payment_date' => $request->input('sale_date') ?? now(),
+                            'notes' => null,
+                        ];
+                    }
+                }
+
+                $dueAmount = max(0, $totalAmount - $paidAmount);
                 $saleCode = 'SALE-' . date('Ymd') . '-' . str_pad(Sale::count() + 1, 5, '0', STR_PAD_LEFT);
 
                 $saleRecord = Sale::create([
@@ -171,7 +218,18 @@ class SaleController extends Controller
                     ]);
                 }
 
-                // If credit sale and shop_id is set, increment shop's current credit balance
+                foreach ($paymentRecords as $pRecord) {
+                    SalePayment::create([
+                        'sale_id' => $saleRecord->id,
+                        'payment_type' => $pRecord['payment_type'],
+                        'amount' => $pRecord['amount'],
+                        'reference_number' => $pRecord['reference_number'],
+                        'payment_date' => $pRecord['payment_date'],
+                        'notes' => $pRecord['notes'],
+                    ]);
+                }
+
+                // If due_amount > 0 and shop_id is set, increment shop's current credit balance
                 if ($request->filled('shop_id') && $dueAmount > 0) {
                     $shop = Shop::find($request->input('shop_id'));
                     if ($shop) {
@@ -179,7 +237,7 @@ class SaleController extends Controller
                     }
                 }
 
-                return $saleRecord->load(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item']);
+                return $saleRecord->load(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments']);
             });
 
             return $this->successResponse($sale, 'Sale recorded successfully', 201);
@@ -194,7 +252,7 @@ class SaleController extends Controller
     public function show($id)
     {
         try {
-            $sale = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item'])->find($id);
+            $sale = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments'])->find($id);
 
             if (!$sale) {
                 return $this->errorResponse('Sale not found', 404);
@@ -220,36 +278,72 @@ class SaleController extends Controller
 
             $validator = Validator::make($request->all(), [
                 'status' => 'nullable|string|in:PENDING,COMPLETED,CANCELLED',
-                'payment_type' => 'nullable|string|in:CASH,CREDIT,CHEQUE,ONLINE',
+                'payment_type' => 'nullable|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD,SPLIT',
                 'paid_amount' => 'nullable|numeric|min:0',
                 'notes' => 'nullable|string',
+                'payments' => 'nullable|array',
+                'payments.*.payment_type' => 'required_with:payments|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD',
+                'payments.*.amount' => 'required_with:payments|numeric|min:0',
+                'payments.*.reference_number' => 'nullable|string',
+                'payments.*.payment_date' => 'nullable|date',
+                'payments.*.notes' => 'nullable|string',
             ]);
 
             if ($validator->fails()) {
                 return $this->errorResponse('Validation failed', 422, $validator->errors()->first());
             }
 
-            if ($request->has('status')) {
-                $sale->status = $request->input('status');
-            }
+            DB::transaction(function () use ($request, $sale) {
+                if ($request->has('status')) {
+                    $sale->status = $request->input('status');
+                }
 
-            if ($request->has('payment_type')) {
-                $sale->payment_type = strtoupper($request->input('payment_type'));
-            }
+                if ($request->has('payment_type')) {
+                    $sale->payment_type = strtoupper($request->input('payment_type'));
+                }
 
-            if ($request->has('notes')) {
-                $sale->notes = $request->input('notes');
-            }
+                if ($request->has('notes')) {
+                    $sale->notes = $request->input('notes');
+                }
 
-            if ($request->has('paid_amount')) {
-                $sale->paid_amount = (float) $request->input('paid_amount');
-                $sale->due_amount = max(0, $sale->total_amount - $sale->paid_amount);
-            }
+                if ($request->filled('payments') && is_array($request->input('payments'))) {
+                    // Re-create payment records
+                    $sale->payments()->delete();
+                    $newPaidAmount = 0.00;
 
-            $sale->save();
+                    foreach ($request->input('payments') as $p) {
+                        $pType = strtoupper($p['payment_type']);
+                        $pAmount = (float) $p['amount'];
+
+                        if ($pType !== 'CREDIT') {
+                            $newPaidAmount += $pAmount;
+                        }
+
+                        SalePayment::create([
+                            'sale_id' => $sale->id,
+                            'payment_type' => $pType,
+                            'amount' => $pAmount,
+                            'reference_number' => $p['reference_number'] ?? null,
+                            'payment_date' => $p['payment_date'] ?? now(),
+                            'notes' => $p['notes'] ?? null,
+                        ]);
+                    }
+
+                    $sale->paid_amount = $newPaidAmount;
+                    $sale->due_amount = max(0, $sale->total_amount - $sale->paid_amount);
+                    if ($sale->payment_type !== 'SPLIT') {
+                        $sale->payment_type = 'SPLIT';
+                    }
+                } elseif ($request->has('paid_amount')) {
+                    $sale->paid_amount = (float) $request->input('paid_amount');
+                    $sale->due_amount = max(0, $sale->total_amount - $sale->paid_amount);
+                }
+
+                $sale->save();
+            });
 
             return $this->successResponse(
-                $sale->load(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item']),
+                $sale->load(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments']),
                 'Sale updated successfully',
                 200
             );

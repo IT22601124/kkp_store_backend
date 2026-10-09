@@ -157,27 +157,48 @@ class RepStockController extends Controller
     {
         try {
             $validator = Validator::make($request->all(), [
-                'request_id' => 'required|integer|exists:stock_requests,id',
+                'request_id' => 'nullable|integer',
+                'from_branch_id' => 'nullable|integer',
+                'to_referrer_id' => 'nullable|integer',
+                'rep_id' => 'nullable|integer',
                 'items' => 'required|array|min:1',
                 'items.*.item_id' => 'required|integer|exists:items,id',
                 'items.*.quantity' => 'required|integer|min:1',
                 'items.*.batch_number' => 'nullable|string',
             ]);
- 
+
             if ($validator->fails()) {
                 return $this->errorResponse('Validation failed', 422, $validator->errors()->first());
             }
 
             $user = $request->user();
-            $stockRequest = StockRequest::findOrFail($request->request_id);
-            $rep_id = $stockRequest->rep_id;
-            $branch_id = $stockRequest->branch_id ?? ($user->dsrProfile?->branch_id ?? 1);
-               try {
+            $requestId = $request->input('request_id');
+            $stockRequest = null;
+            if ($requestId) {
+                $stockRequest = StockRequest::find($requestId);
+            }
+
+            $rep_id = $stockRequest ? $stockRequest->rep_id : ($request->input('to_referrer_id') ?? $request->input('rep_id') ?? 1);
+            $branch_id = $stockRequest ? ($stockRequest->branch_id ?? 1) : ($request->input('from_branch_id') ?? 1);
+
+            if ($stockRequest) {
+                try {
                     $stockRequest->status = 'APPROVED';
                     $stockRequest->save();
                 } catch (Throwable $th) {
-                    Log::info('errrrrrrrrrrrrrrrrrr', [$th]);
+                    Log::info('err updating stock request status', [$th]);
                 }
+            } else {
+                $requestCode = 'REQ-' . date('Ymd') . '-' . str_pad(StockRequest::count() + 1, 4, '0', STR_PAD_LEFT);
+                $stockRequest = StockRequest::create([
+                    'request_code' => $requestCode,
+                    'branch_id' => $branch_id,
+                    'rep_id' => $rep_id,
+                    'request_date' => now(),
+                    'status' => 'APPROVED',
+                    'notes' => 'Direct Stock Issuance from Web Portal',
+                ]);
+            }
             $repStock = DB::transaction(function () use ($request, $stockRequest, $user, $rep_id, $branch_id) {
                 // 1. Update stock_requests status to APPROVED
              

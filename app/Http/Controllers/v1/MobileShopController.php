@@ -7,6 +7,7 @@ use App\Http\Traits\ApiResponse;
 use App\Models\Shop;
 use App\Models\ShopGpsLocation;
 use App\Models\DistributionRoute;
+use App\Models\Sale;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -272,6 +273,72 @@ class MobileShopController extends Controller
         }
         catch(Throwable $th){
             return $this->errorResponse('',500);
+        }
+    }
+
+    /**
+     * Get shops visited today (where a sale was created today for this rep).
+     */
+    public function getTodayVisitedShops(Request $request)
+    {
+        try {
+            $user = $request->user();
+            $repId = $user ? $user->id : $request->query('rep_id');
+            $date = $request->query('date', now()->format('Y-m-d'));
+
+            $query = Sale::whereDate('sale_date', $date);
+
+            if ($repId) {
+                $query->where('rep_id', $repId);
+            }
+
+            $shopIds = $query->whereNotNull('shop_id')
+                ->pluck('shop_id')
+                ->unique()
+                ->toArray();
+
+            $shops = Shop::whereIn('id', $shopIds)->orderBy('id', 'desc')->get();
+            $formatted = $shops->map(fn($s) => $this->formatShop($s));
+
+            return $this->successResponse(
+                $formatted,
+                'Today visited shops retrieved successfully',
+                200
+            );
+        } catch (Throwable $th) {
+            Log::error('MobileShopController getTodayVisitedShops error: ' . $th->getMessage());
+            return $this->errorResponse(
+                'Failed to retrieve today visited shops',
+                500,
+                $th->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Get shops with outstanding credit balance for mobile application.
+     */
+    public function getCreditShops(Request $request)
+    {
+        try {
+            $shops = Shop::where('current_credit_balance', '>', 0)
+                ->orderBy('current_credit_balance', 'desc')
+                ->get();
+
+            $formatted = $shops->map(fn($s) => $this->formatShop($s));
+
+            return $this->successResponse(
+                $formatted,
+                'Credit shops retrieved successfully',
+                200
+            );
+        } catch (Throwable $th) {
+            Log::error('MobileShopController getCreditShops error: ' . $th->getMessage());
+            return $this->errorResponse(
+                'Failed to retrieve credit shops',
+                500,
+                $th->getMessage()
+            );
         }
     }
 }

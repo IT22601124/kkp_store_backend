@@ -74,4 +74,9 @@ class Sale extends Model
     {
         return $this->belongsTo(DsrTrip::class, 'dsr_trip_id');
     }
+
+    public function payments()
+    {
+        return $this->hasMany(SalePayment::class, 'sale_id');
+    }
 }
