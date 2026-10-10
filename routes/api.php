@@ -109,9 +109,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/v1/stocks/branch', [StockController::class, 'fetchStockByBranch']);
     Route::get('/v1/stocks/{id}', [StockController::class, 'show']);
     Route::get('/rep-stocks', [RepStockController::class, 'index']);
+    Route::get('/rep-stocks/available', [RepStockController::class, 'getAllRepsAvailableStock']);
     Route::get('/rep-stocks/rep/{repId}', [RepStockController::class, 'getByRep']);
     Route::get('/rep-stocks/{id}', [RepStockController::class, 'show']);
     Route::get('/v1/rep-stocks', [RepStockController::class, 'index']);
+    Route::get('/v1/rep-stocks/available', [RepStockController::class, 'getAllRepsAvailableStock']);
     Route::get('/v1/rep-stocks/rep/{repId}', [RepStockController::class, 'getByRep']);
     Route::get('/v1/rep-stocks/{id}', [RepStockController::class, 'show']);
     Route::post('/v1/rep-stocks/issue-stock', [RepStockController::class,'issueStockForRep']);
