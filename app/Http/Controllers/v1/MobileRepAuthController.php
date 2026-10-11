@@ -78,6 +78,12 @@ class MobileRepAuthController extends Controller
                 );
             }
 
+            // Store or update FCM device token if provided in login request
+            $fcmToken = $request->input('fcm_token') ?? $request->input('device_token');
+            if (!empty($fcmToken)) {
+                $user->update(['fcm_token' => $fcmToken]);
+            }
+
             // Create Sanctum authentication token for mobile app
             $token = $user->createToken('mobile_rep_token')->plainTextToken;
 
@@ -182,6 +188,40 @@ class MobileRepAuthController extends Controller
             return $this->errorResponse(
                 'Invalid or expired token',
                 401,
+                $th->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Update FCM push notification device token for the authenticated rep.
+     */
+    public function updateFcmToken(Request $request)
+    {
+        try {
+            $fcmToken = $request->input('fcm_token') ?? $request->input('device_token');
+
+            if (empty($fcmToken)) {
+                return $this->errorResponse('FCM token is required', 422);
+            }
+
+            $user = $request->user();
+            if (!$user) {
+                return $this->errorResponse('Unauthenticated', 401);
+            }
+
+            $user->update(['fcm_token' => $fcmToken]);
+
+            return $this->successResponse(
+                ['fcm_token' => $user->fcm_token],
+                'FCM device token updated successfully',
+                200
+            );
+        } catch (Throwable $th) {
+            Log::error('MobileRepAuthController updateFcmToken error: ' . $th->getMessage());
+            return $this->errorResponse(
+                'Failed to update FCM device token',
+                500,
                 $th->getMessage()
             );
         }

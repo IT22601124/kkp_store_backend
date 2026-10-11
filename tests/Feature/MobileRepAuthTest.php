@@ -225,4 +225,71 @@ class MobileRepAuthTest extends TestCase
                 'message' => 'Logged out successfully',
             ]);
     }
+
+    public function test_rep_login_stores_fcm_token(): void
+    {
+        $user = User::create([
+            'name' => 'FCM Test Rep',
+            'email' => 'fcmrep@kkp.com',
+            'phone' => '0779998877',
+            'password' => Hash::make('secret123'),
+            'role' => 'DSR_REP',
+            'status' => 'ACTIVE',
+        ]);
+
+        DsrProfile::create([
+            'user_id' => $user->id,
+            'rep_code' => 'REP-FCM',
+            'dsr_status' => 'ACTIVE',
+        ]);
+
+        $fcmToken = 'dK_1234567890_mock_fcm_registration_token_xyz';
+
+        $response = $this->postJson('/api/v1/mobile/rep/login', [
+            'phone' => '0779998877',
+            'password' => 'secret123',
+            'fcm_token' => $fcmToken,
+        ]);
+
+        $response->assertStatus(200)
+            ->assertJson([
+                'success' => true,
+                'message' => 'Rep login successful',
+            ]);
+
+        $user->refresh();
+        $this->assertEquals($fcmToken, $user->fcm_token);
+    }
+
+    public function test_rep_can_update_fcm_token(): void
+    {
+        $user = User::create([
+            'name' => 'Update FCM Rep',
+            'email' => 'updatefcm@kkp.com',
+            'phone' => '0778887766',
+            'password' => Hash::make('secret123'),
+            'role' => 'DSR_REP',
+            'status' => 'ACTIVE',
+        ]);
+
+        $token = $user->createToken('test_token')->plainTextToken;
+        $newFcmToken = 'refreshed_fcm_token_abcdef_999';
+
+        $response = $this->withHeader('Authorization', 'Bearer ' . $token)
+            ->postJson('/api/v1/mobile/rep/fcm-token', [
+                'fcm_token' => $newFcmToken,
+            ]);
+
+        $response->assertStatus(200)
+            ->assertJson([
+                'success' => true,
+                'message' => 'FCM device token updated successfully',
+                'data' => [
+                    'fcm_token' => $newFcmToken,
+                ],
+            ]);
+
+        $user->refresh();
+        $this->assertEquals($newFcmToken, $user->fcm_token);
+    }
 }

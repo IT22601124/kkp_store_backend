@@ -12,6 +12,7 @@ class GrnItem extends Model
     protected $fillable = [
         'goods_received_note_id',
         'item_id',
+        'batch_number',
         'quantity_received',
         'unit_price',
         'total_amount'

@@ -37,4 +37,9 @@ class DsrTrip extends Model
     {
         return $this->belongsTo(Route::class, 'route_id');
     }
+
+    public function bankDeposits()
+    {
+        return $this->hasMany(DsrBankDeposit::class, 'dsr_trip_id');
+    }
 }

@@ -11,6 +11,8 @@ use App\Models\StockMovement;
 use App\Models\StockRequest;
 use App\Models\StockTransfer;
 use App\Models\StockTransferItem;
+use App\Models\User;
+use App\Traits\FirebaseNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -19,7 +21,7 @@ use Throwable;
 
 class RepStockController extends Controller
 {
-    use ApiResponse;
+    use ApiResponse, FirebaseNotification;
 
     /**
      * Display a listing of sales rep stocks.
@@ -240,20 +242,33 @@ class RepStockController extends Controller
                 foreach ($lineDetails as $line) {
                     $item = $line['item'];
                     $qty = $line['qty'];
+                    $batchNum = $line['batch_number'] ?? null;
 
-                    $mainStock = Stock::firstOrCreate(
-                        [
+                    $stockQuery = Stock::where('branch_id', $branch_id)
+                        ->whereNull('referrer_id')
+                        ->where('item_id', $item->id);
+
+                    if ($batchNum) {
+                        $mainStock = (clone $stockQuery)->where('batch_number', $batchNum)->first()
+                            ?? (clone $stockQuery)->where('quantity', '>', 0)->first()
+                            ?? $stockQuery->first();
+                    } else {
+                        $mainStock = (clone $stockQuery)->where('quantity', '>', 0)->first()
+                            ?? $stockQuery->first();
+                    }
+
+                    if (!$mainStock) {
+                        $mainStock = Stock::create([
                             'branch_id' => $branch_id,
                             'referrer_id' => null,
                             'item_id' => $item->id,
-                        ],
-                        [
+                            'batch_number' => $batchNum,
                             'quantity' => 0,
                             'unit_cost' => $item->purchase_price,
                             'unit_price' => $item->selling_price,
                             'total_value' => 0.00,
-                        ]
-                    );
+                        ]);
+                    }
 
                     $sourceQtyBefore = $mainStock->quantity;
                     $mainStock->quantity -= $qty;
@@ -263,6 +278,7 @@ class RepStockController extends Controller
                     StockTransferItem::create([
                         'stock_transfer_id' => $stockTransfer->id,
                         'item_id' => $item->id,
+                        'batch_number' => $batchNum ?? $mainStock->batch_number,
                         'quantity' => $qty,
                         'unit_price' => $line['unitPrice'],
                         'subtotal' => $line['subtotal'],
@@ -302,6 +318,50 @@ class RepStockController extends Controller
 
                 return $repStock->load(['rep', 'items.item']);
             });
+
+            // Dispatch Firebase Push Notification to the Sales Rep
+            try {
+                $targetRep = $repStock->rep ?? User::find($rep_id);
+                if (!$targetRep && !empty($rep_id)) {
+                    $targetRep = User::whereHas('dsrProfile', function ($q) use ($rep_id) {
+                        $q->where('id', $rep_id);
+                    })->first();
+                }
+
+                if ($targetRep && !empty($targetRep->fcm_token)) {
+                    $totalQty = $repStock->items ? $repStock->items->sum('quantity') : collect($request->items)->sum('quantity');
+                    $itemCount = $repStock->items ? $repStock->items->count() : count($request->items);
+                    $formattedValue = number_format((float) ($repStock->total_value ?? 0), 2);
+
+                    $title = '📦 New Stock Issued';
+                    $body = "You have received {$totalQty} unit(s) across {$itemCount} item(s) (Total Value: Rs. {$formattedValue}).";
+
+                    $notifResult = $this->sendFirebaseNotification(
+                        $targetRep->fcm_token,
+                        $title,
+                        $body,
+                        [
+                            'type' => 'stock_issued',
+                            'rep_stock_id' => (string) $repStock->id,
+                            'request_id' => (string) ($requestId ?? ''),
+                            'total_value' => (string) ($repStock->total_value ?? 0),
+                            'total_quantity' => (string) $totalQty,
+                            'item_count' => (string) $itemCount,
+                            'click_action' => 'FLUTTER_NOTIFICATION_CLICK',
+                        ]
+                    );
+
+                    if (!empty($notifResult['success'])) {
+                        Log::info("[RepStockController] Firebase notification delivered to Rep #{$rep_id} ({$targetRep->name}) for RepStock #{$repStock->id}");
+                    } else {
+                        Log::warning("[RepStockController] Firebase notification could not be delivered to Rep #{$rep_id}: " . ($notifResult['message'] ?? 'Unknown reason'));
+                    }
+                } else {
+                    Log::info("[RepStockController] Rep #{$rep_id} does not have an FCM device token registered. Notification skipped.");
+                }
+            } catch (Throwable $notifError) {
+                Log::warning('[RepStockController] Firebase notification dispatch error during stock issuance: ' . $notifError->getMessage());
+            }
 
             return $this->successResponse($repStock, 'Stock issued to rep successfully', 200);
         } catch (Throwable $th) {

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Traits\ApiResponse;
+use App\Models\BankAccount;
 use App\Models\Item;
 use App\Models\Sale;
 use App\Models\SaleItem;
@@ -23,7 +24,7 @@ class SaleController extends Controller
     public function index(Request $request)
     {
         try {
-            $query = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments']);
+            $query = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount']);
 
             if ($request->has('rep_id')) {
                 $query->where('rep_id', $request->query('rep_id'));
@@ -97,7 +98,10 @@ class SaleController extends Controller
             'items.*.unit_price' => 'nullable|numeric|min:0',
             'items.*.discount' => 'nullable|numeric|min:0',
             'items.*.batch_number' => 'nullable|string',
+            'bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
+            'reference_number' => 'nullable|string',
             'payments' => 'nullable|array',
+            'payments.*.bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
             'payments.*.payment_type' => 'required_with:payments|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD',
             'payments.*.amount' => 'required_with:payments|numeric|min:0',
             'payments.*.reference_number' => 'nullable|string',
@@ -151,6 +155,7 @@ class SaleController extends Controller
                     foreach ($request->input('payments') as $p) {
                         $pType = strtoupper($p['payment_type']);
                         $pAmount = (float) $p['amount'];
+                        $pBankId = $p['bank_account_id'] ?? $request->input('bank_account_id') ?? null;
                         $pRef = $p['reference_number'] ?? null;
                         $pDate = $p['payment_date'] ?? $request->input('sale_date') ?? now();
                         $pNotes = $p['notes'] ?? null;
@@ -162,6 +167,7 @@ class SaleController extends Controller
                         $paymentRecords[] = [
                             'payment_type' => $pType,
                             'amount' => $pAmount,
+                            'bank_account_id' => $pBankId,
                             'reference_number' => $pRef,
                             'payment_date' => $pDate,
                             'notes' => $pNotes,
@@ -177,9 +183,10 @@ class SaleController extends Controller
                         $paymentRecords[] = [
                             'payment_type' => $paymentType,
                             'amount' => $paidAmount,
-                            'reference_number' => null,
+                            'bank_account_id' => $request->input('bank_account_id'),
+                            'reference_number' => $request->input('reference_number'),
                             'payment_date' => $request->input('sale_date') ?? now(),
-                            'notes' => null,
+                            'notes' => $request->input('notes'),
                         ];
                     }
                 }
@@ -221,12 +228,17 @@ class SaleController extends Controller
                 foreach ($paymentRecords as $pRecord) {
                     SalePayment::create([
                         'sale_id' => $saleRecord->id,
+                        'bank_account_id' => $pRecord['bank_account_id'] ?? null,
                         'payment_type' => $pRecord['payment_type'],
                         'amount' => $pRecord['amount'],
                         'reference_number' => $pRecord['reference_number'],
                         'payment_date' => $pRecord['payment_date'],
                         'notes' => $pRecord['notes'],
                     ]);
+
+                    if (!empty($pRecord['bank_account_id']) && $pRecord['amount'] > 0) {
+                        BankAccount::find($pRecord['bank_account_id'])?->increment('current_balance', $pRecord['amount']);
+                    }
                 }
 
                 // If due_amount > 0 and shop_id is set, increment shop's current credit balance
@@ -237,7 +249,7 @@ class SaleController extends Controller
                     }
                 }
 
-                return $saleRecord->load(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments']);
+                return $saleRecord->load(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount']);
             });
 
             return $this->successResponse($sale, 'Sale recorded successfully', 201);
@@ -252,7 +264,7 @@ class SaleController extends Controller
     public function show($id)
     {
         try {
-            $sale = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments'])->find($id);
+            $sale = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount'])->find($id);
 
             if (!$sale) {
                 return $this->errorResponse('Sale not found', 404);
@@ -281,7 +293,9 @@ class SaleController extends Controller
                 'payment_type' => 'nullable|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD,SPLIT',
                 'paid_amount' => 'nullable|numeric|min:0',
                 'notes' => 'nullable|string',
+                'bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
                 'payments' => 'nullable|array',
+                'payments.*.bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
                 'payments.*.payment_type' => 'required_with:payments|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD',
                 'payments.*.amount' => 'required_with:payments|numeric|min:0',
                 'payments.*.reference_number' => 'nullable|string',
@@ -314,6 +328,7 @@ class SaleController extends Controller
                     foreach ($request->input('payments') as $p) {
                         $pType = strtoupper($p['payment_type']);
                         $pAmount = (float) $p['amount'];
+                        $pBankId = $p['bank_account_id'] ?? $request->input('bank_account_id') ?? null;
 
                         if ($pType !== 'CREDIT') {
                             $newPaidAmount += $pAmount;
@@ -321,12 +336,17 @@ class SaleController extends Controller
 
                         SalePayment::create([
                             'sale_id' => $sale->id,
+                            'bank_account_id' => $pBankId,
                             'payment_type' => $pType,
                             'amount' => $pAmount,
                             'reference_number' => $p['reference_number'] ?? null,
                             'payment_date' => $p['payment_date'] ?? now(),
                             'notes' => $p['notes'] ?? null,
                         ]);
+
+                        if (!empty($pBankId) && $pAmount > 0) {
+                            BankAccount::find($pBankId)?->increment('current_balance', $pAmount);
+                        }
                     }
 
                     $sale->paid_amount = $newPaidAmount;
@@ -343,7 +363,7 @@ class SaleController extends Controller
             });
 
             return $this->successResponse(
-                $sale->load(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments']),
+                $sale->load(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount']),
                 'Sale updated successfully',
                 200
             );

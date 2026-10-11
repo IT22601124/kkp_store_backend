@@ -51,4 +51,9 @@ class DailySettlement extends Model
     {
         return $this->hasMany(DailySettlementItem::class, 'daily_settlement_id');
     }
+
+    public function bankDeposits()
+    {
+        return $this->hasMany(DsrBankDeposit::class, 'daily_settlement_id');
+    }
 }

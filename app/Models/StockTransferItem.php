@@ -12,6 +12,7 @@ class StockTransferItem extends Model
     protected $fillable = [
         'stock_transfer_id',
         'item_id',
+        'batch_number',
         'quantity',
         'unit_price',
         'subtotal'

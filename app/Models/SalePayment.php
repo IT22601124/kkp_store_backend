@@ -13,6 +13,7 @@ class SalePayment extends Model
 
     protected $fillable = [
         'sale_id',
+        'bank_account_id',
         'payment_type',
         'amount',
         'reference_number',
@@ -28,5 +29,10 @@ class SalePayment extends Model
     public function sale()
     {
         return $this->belongsTo(Sale::class, 'sale_id');
+    }
+
+    public function bankAccount()
+    {
+        return $this->belongsTo(BankAccount::class, 'bank_account_id');
     }
 }

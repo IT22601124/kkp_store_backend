@@ -26,6 +26,7 @@ class User extends Authenticatable
         'password',
         'role',
         'status',
+        'fcm_token',
     ];
 
     /**
@@ -65,5 +66,13 @@ class User extends Authenticatable
     public function sales()
     {
         return $this->hasMany(Sale::class, 'rep_id');
+    }
+
+    /**
+     * Get the bank accounts associated with the user/agent.
+     */
+    public function bankAccounts()
+    {
+        return $this->hasMany(BankAccount::class, 'user_id');
     }
 }

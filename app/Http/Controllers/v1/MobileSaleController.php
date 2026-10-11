@@ -4,8 +4,10 @@ namespace App\Http\Controllers\v1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ApiResponse;
+use App\Models\BankAccount;
 use App\Models\DailySettlement;
 use App\Models\DailySettlementItem;
+use App\Models\DsrBankDeposit;
 use App\Models\Item;
 use App\Models\Sale;
 use App\Models\SaleItem;
@@ -25,8 +27,16 @@ class MobileSaleController extends Controller
     {
         try {
             $rep = $request->user();
-            $query = Sale::with(['shop', 'salesItems.item', 'payments'])
+            $query = Sale::with(['shop', 'salesItems.item', 'payments.bankAccount'])
                 ->where('rep_id', $rep->id);
+
+            if ($request->has('date')) {
+                $dateVal = $request->query('date');
+                if ($dateVal === 'today') {
+                    $dateVal = now()->format('Y-m-d');
+                }
+                $query->whereDate('sale_date', $dateVal);
+            }
 
             if ($request->has('shop_id')) {
                 $query->where('shop_id', $request->query('shop_id'));
@@ -45,6 +55,61 @@ class MobileSaleController extends Controller
             return $this->successResponse($sales, 'Mobile sales retrieved successfully');
         } catch (Throwable $th) {
             return $this->errorResponse('Failed to retrieve mobile sales', 500, $th->getMessage());
+        }
+    }
+
+    /** Get today's sales for the authenticated rep with summary metrics. */
+    public function getTodaySales(Request $request)
+    {
+        try {
+            $user = $request->user();
+            $repId = $user ? $user->id : $request->query('rep_id');
+            $date = $request->query('date', now()->format('Y-m-d'));
+            if ($date === 'today') {
+                $date = now()->format('Y-m-d');
+            }
+
+            $query = Sale::with(['shop', 'salesItems.item', 'payments.bankAccount'])
+                ->whereDate('sale_date', $date);
+
+            if ($repId) {
+                $query->where('rep_id', $repId);
+            }
+
+            if ($request->has('shop_id')) {
+                $query->where('shop_id', $request->query('shop_id'));
+            }
+
+            if ($request->has('payment_type')) {
+                $query->where('payment_type', $request->query('payment_type'));
+            }
+
+            if ($request->has('status')) {
+                $query->where('status', $request->query('status'));
+            }
+
+            $sales = $query->orderBy('id', 'desc')->get();
+
+            $summary = [
+                'total_sales_count' => $sales->count(),
+                'totalSalesCount' => $sales->count(),
+                'total_sales_amount' => (float) $sales->sum('total_amount'),
+                'totalSalesAmount' => (float) $sales->sum('total_amount'),
+                'total_paid_amount' => (float) $sales->sum('paid_amount'),
+                'totalPaidAmount' => (float) $sales->sum('paid_amount'),
+                'total_due_amount' => (float) $sales->sum('due_amount'),
+                'totalDueAmount' => (float) $sales->sum('due_amount'),
+                'unique_shops_count' => $sales->pluck('shop_id')->filter()->unique()->count(),
+                'uniqueShopsCount' => $sales->pluck('shop_id')->filter()->unique()->count(),
+            ];
+
+            return $this->successResponse([
+                'date' => $date,
+                'summary' => $summary,
+                'sales' => $sales,
+            ], 'Today sales retrieved successfully', 200);
+        } catch (Throwable $th) {
+            return $this->errorResponse('Failed to retrieve today sales', 500, $th->getMessage());
         }
     }
 
@@ -67,7 +132,9 @@ class MobileSaleController extends Controller
             'items.*.unit_price' => 'nullable|numeric|min:0',
             'items.*.discount' => 'nullable|numeric|min:0',
             'items.*.batch_number' => 'nullable|string',
+            'bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
             'payments' => 'nullable|array',
+            'payments.*.bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
             'payments.*.payment_type' => 'required_with:payments|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD',
             'payments.*.amount' => 'required_with:payments|numeric|min:0',
             'payments.*.reference_number' => 'nullable|string',
@@ -121,6 +188,7 @@ class MobileSaleController extends Controller
                     foreach ($request->input('payments') as $p) {
                         $pType = strtoupper($p['payment_type']);
                         $pAmount = (float) $p['amount'];
+                        $pBankId = $p['bank_account_id'] ?? $request->input('bank_account_id') ?? null;
                         $pRef = $p['reference_number'] ?? null;
                         $pDate = $p['payment_date'] ?? $request->input('sale_date') ?? now();
                         $pNotes = $p['notes'] ?? null;
@@ -132,6 +200,7 @@ class MobileSaleController extends Controller
                         $paymentRecords[] = [
                             'payment_type' => $pType,
                             'amount' => $pAmount,
+                            'bank_account_id' => $pBankId,
                             'reference_number' => $pRef,
                             'payment_date' => $pDate,
                             'notes' => $pNotes,
@@ -147,6 +216,7 @@ class MobileSaleController extends Controller
                         $paymentRecords[] = [
                             'payment_type' => $paymentType,
                             'amount' => $paidAmount,
+                            'bank_account_id' => $request->input('bank_account_id'),
                             'reference_number' => null,
                             'payment_date' => $request->input('sale_date') ?? now(),
                             'notes' => null,
@@ -191,12 +261,17 @@ class MobileSaleController extends Controller
                 foreach ($paymentRecords as $pRecord) {
                     SalePayment::create([
                         'sale_id' => $saleRecord->id,
+                        'bank_account_id' => $pRecord['bank_account_id'] ?? null,
                         'payment_type' => $pRecord['payment_type'],
                         'amount' => $pRecord['amount'],
                         'reference_number' => $pRecord['reference_number'],
                         'payment_date' => $pRecord['payment_date'],
                         'notes' => $pRecord['notes'],
                     ]);
+
+                    if (!empty($pRecord['bank_account_id']) && $pRecord['amount'] > 0) {
+                        BankAccount::find($pRecord['bank_account_id'])?->increment('current_balance', $pRecord['amount']);
+                    }
                 }
 
                 // If credit sale and shop_id is set, increment shop credit balance
@@ -207,7 +282,7 @@ class MobileSaleController extends Controller
                     }
                 }
 
-                return $saleRecord->load(['shop', 'salesItems.item', 'payments']);
+                return $saleRecord->load(['shop', 'salesItems.item', 'payments.bankAccount']);
             });
 
             return $this->successResponse($sale, 'Mobile sale recorded successfully', 201);
@@ -221,7 +296,7 @@ class MobileSaleController extends Controller
     {
         try {
             $rep = $request->user();
-            $sale = Sale::with(['shop', 'salesItems.item', 'payments'])
+            $sale = Sale::with(['shop', 'salesItems.item', 'payments.bankAccount'])
                 ->where('rep_id', $rep->id)
                 ->find($id);
 
@@ -261,7 +336,7 @@ class MobileSaleController extends Controller
 
             // Check if settlement sheet is already submitted & stored in database for this date and rep
             if ($repId) {
-                $savedSettlement = DailySettlement::with(['items', 'rep', 'dsrTrip'])
+                $savedSettlement = DailySettlement::with(['items', 'rep', 'dsrTrip', 'bankDeposits.bankAccount'])
                     ->where('rep_id', $repId)
                     ->whereDate('settlement_date', $date)
                     ->first();
@@ -291,6 +366,7 @@ class MobileSaleController extends Controller
                         'total_credit_issued' => (float) $savedSettlement->total_credit_issued,
                         'ending_shop_credit' => (float) $savedSettlement->ending_shop_credit,
                         'items_matrix' => $itemsMatrix,
+                        'bank_deposits' => $savedSettlement->bankDeposits,
                         'notes' => $savedSettlement->notes,
                         'is_saved' => true,
                     ], 'Stored daily settlement sheet retrieved successfully');
@@ -417,6 +493,11 @@ class MobileSaleController extends Controller
                 'dsr_trip_id' => 'nullable|integer',
                 'notes' => 'nullable|string',
                 'items' => 'nullable|array',
+                'bank_deposits' => 'nullable|array',
+                'bank_deposits.*.bank_account_id' => 'required_with:bank_deposits|integer|exists:bank_accounts,id',
+                'bank_deposits.*.amount' => 'required_with:bank_deposits|numeric|min:0.01',
+                'bank_deposits.*.slip_reference' => 'nullable|string',
+                'bank_deposits.*.notes' => 'nullable|string',
             ]);
 
             if ($validator->fails()) {
@@ -482,7 +563,26 @@ class MobileSaleController extends Controller
                     ]);
                 }
 
-                return $settlementRecord->load(['items', 'rep', 'dsrTrip']);
+                // Sync bank deposits if provided
+                if ($request->filled('bank_deposits') && is_array($request->input('bank_deposits'))) {
+                    foreach ($request->input('bank_deposits') as $bd) {
+                        DsrBankDeposit::create([
+                            'bank_account_id'     => $bd['bank_account_id'],
+                            'rep_id'              => $repId,
+                            'daily_settlement_id' => $settlementRecord->id,
+                            'dsr_trip_id'         => $request->input('dsr_trip_id'),
+                            'deposit_date'        => $date,
+                            'amount'              => (float) $bd['amount'],
+                            'slip_reference'      => $bd['slip_reference'] ?? null,
+                            'status'              => 'CONFIRMED',
+                            'notes'               => $bd['notes'] ?? null,
+                        ]);
+
+                        BankAccount::find($bd['bank_account_id'])?->increment('current_balance', (float) $bd['amount']);
+                    }
+                }
+
+                return $settlementRecord->load(['items', 'rep', 'dsrTrip', 'bankDeposits.bankAccount']);
             });
 
             return $this->successResponse($settlement, 'Daily settlement sheet submitted and saved to database successfully', 201);
@@ -495,7 +595,7 @@ class MobileSaleController extends Controller
     public function getAllDailySettlements(Request $request)
     {
         try {
-            $query = DailySettlement::with(['items.item', 'rep', 'dsrTrip']);
+            $query = DailySettlement::with(['items.item', 'rep', 'dsrTrip', 'bankDeposits.bankAccount']);
 
             if ($request->has('rep_id')) {
                 $query->where('rep_id', $request->query('rep_id'));
@@ -521,7 +621,7 @@ class MobileSaleController extends Controller
     public function updateDailySettlementStatus(Request $request, $id)
     {
         try {
-            $settlement = DailySettlement::with(['items.item', 'rep', 'dsrTrip'])->find($id);
+            $settlement = DailySettlement::with(['items.item', 'rep', 'dsrTrip', 'bankDeposits.bankAccount'])->find($id);
 
             if (!$settlement) {
                 return $this->errorResponse('Daily settlement record not found', 404);

@@ -9,11 +9,16 @@ use App\Models\Stock;
 use App\Models\RepStock;
 use App\Models\StockMovement;
 use App\Models\Item;
+use App\Models\User;
+use App\Traits\FirebaseNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class StockTransferController extends Controller
 {
+    use FirebaseNotification;
     public function index()
     {
         $transfers = StockTransfer::with(['fromBranch', 'toReferrer', 'items.item'])
@@ -35,6 +40,7 @@ class StockTransferController extends Controller
             'items' => 'required|array|min:1',
             'items.*.item_id' => 'required|exists:items,id',
             'items.*.quantity' => 'required|integer|min:1',
+            'items.*.batch_number' => 'nullable|string',
             'notes' => 'nullable|string'
         ]);
 
@@ -51,18 +57,12 @@ class StockTransferController extends Controller
                     $subtotal = $qty * $unitPrice;
                     $totalValue += $subtotal;
 
-                    // Check source warehouse stock
-                    $sourceStock = Stock::where('branch_id', $validated['from_branch_id'])
-                        ->whereNull('referrer_id')
-                        ->where('item_id', $item->id)
-                        ->first();
-
                     $lineDetails[] = [
                         'item' => $item,
                         'qty' => $qty,
                         'unitPrice' => $unitPrice,
                         'subtotal' => $subtotal,
-                        'sourceStock' => $sourceStock
+                        'batchNumber' => $line['batch_number'] ?? null,
                     ];
                 }
 
@@ -89,21 +89,36 @@ class StockTransferController extends Controller
                 foreach ($lineDetails as $line) {
                     $item = $line['item'];
                     $qty = $line['qty'];
+                    $batchNum = $line['batchNumber'] ?? null;
 
-                    // A. Update Source Branch Warehouse Stock
-                    $sourceStock = Stock::firstOrCreate(
-                        [
+                    // A. Update Source Branch Warehouse Stock (matching specific batch if provided)
+                    $stockQuery = Stock::where('branch_id', $validated['from_branch_id'])
+                        ->whereNull('referrer_id')
+                        ->where('item_id', $item->id);
+
+                    if ($batchNum) {
+                        $sourceStock = (clone $stockQuery)->where('batch_number', $batchNum)->first()
+                            ?? (clone $stockQuery)->where('quantity', '>', 0)->first()
+                            ?? $stockQuery->first();
+                    } else {
+                        $sourceStock = (clone $stockQuery)->where('quantity', '>', 0)->first()
+                            ?? $stockQuery->first();
+                    }
+
+                    if (!$sourceStock) {
+                        $sourceStock = Stock::create([
                             'branch_id' => $validated['from_branch_id'],
                             'referrer_id' => null,
                             'item_id' => $item->id,
-                        ],
-                        [
+                            'batch_number' => $batchNum,
                             'quantity' => 0,
                             'unit_cost' => $item->purchase_price,
                             'unit_price' => $item->selling_price,
                             'total_value' => 0.00
-                        ]
-                    );
+                        ]);
+                    }
+
+                    $effectiveBatch = $batchNum ?? $sourceStock->batch_number;
 
                     $sourceQtyBefore = $sourceStock->quantity;
                     $sourceStock->quantity -= $qty;
@@ -122,7 +137,7 @@ class StockTransferController extends Controller
                         'reference_type' => StockTransfer::class,
                         'reference_id' => $stockTransfer->id,
                         'performed_by' => auth()->user()->name ?? 'Branch Supervisor',
-                        'notes' => "Stock issued to DSR Rep #{$validated['to_referrer_id']}"
+                        'notes' => "Stock issued to DSR Rep #{$validated['to_referrer_id']} (Batch: {$effectiveBatch})"
                     ]);
 
                     // B. Update Target DSR Rep Stock via AcceptedRequestItem
@@ -130,7 +145,7 @@ class StockTransferController extends Controller
                         'rep_stock_id' => $repStock->id,
                         'item_id' => $item->id,
                         'quantity' => $qty,
-                        'batch_number' => null,
+                        'batch_number' => $effectiveBatch,
                     ]);
 
                     StockMovement::create([
@@ -152,6 +167,7 @@ class StockTransferController extends Controller
                     StockTransferItem::create([
                         'stock_transfer_id' => $stockTransfer->id,
                         'item_id' => $item->id,
+                        'batch_number' => $effectiveBatch,
                         'quantity' => $qty,
                         'unit_price' => $line['unitPrice'],
                         'subtotal' => $line['subtotal']
@@ -160,6 +176,51 @@ class StockTransferController extends Controller
 
                 return $stockTransfer->load(['fromBranch', 'toReferrer', 'items.item']);
             });
+
+            // Dispatch Firebase Push Notification to the recipient Rep
+            try {
+                $targetRep = $transfer->toReferrer ?? User::find($validated['to_referrer_id']);
+                if (!$targetRep && !empty($validated['to_referrer_id'])) {
+                    $targetRep = User::whereHas('dsrProfile', function ($q) use ($validated) {
+                        $q->where('id', $validated['to_referrer_id']);
+                    })->first();
+                }
+
+                if ($targetRep && !empty($targetRep->fcm_token)) {
+                    $totalQty = $transfer->items ? $transfer->items->sum('quantity') : collect($validated['items'])->sum('quantity');
+                    $itemCount = $transfer->items ? $transfer->items->count() : count($validated['items']);
+                    $formattedValue = number_format((float) ($transfer->total_value ?? 0), 2);
+                    $fromBranchName = $transfer->fromBranch->name ?? 'Main Warehouse';
+
+                    $title = '📦 New Stock Issued';
+                    $body = "You have received {$totalQty} unit(s) across {$itemCount} item(s) from {$fromBranchName} (Total Value: Rs. {$formattedValue}).";
+
+                    $notifResult = $this->sendFirebaseNotification(
+                        $targetRep->fcm_token,
+                        $title,
+                        $body,
+                        [
+                            'type' => 'stock_issued',
+                            'transfer_id' => (string) $transfer->id,
+                            'transfer_code' => (string) ($transfer->transfer_code ?? ''),
+                            'total_value' => (string) ($transfer->total_value ?? 0),
+                            'total_quantity' => (string) $totalQty,
+                            'item_count' => (string) $itemCount,
+                            'click_action' => 'FLUTTER_NOTIFICATION_CLICK',
+                        ]
+                    );
+
+                    if (!empty($notifResult['success'])) {
+                        Log::info("[StockTransferController] Firebase notification delivered to Rep #{$validated['to_referrer_id']} ({$targetRep->name}) for Transfer #{$transfer->id}");
+                    } else {
+                        Log::warning("[StockTransferController] Firebase notification could not be delivered to Rep #{$validated['to_referrer_id']}: " . ($notifResult['message'] ?? 'Unknown reason'));
+                    }
+                } else {
+                    Log::info("[StockTransferController] Rep User #{$validated['to_referrer_id']} does not have an FCM device token. Notification skipped.");
+                }
+            } catch (Throwable $notifEx) {
+                Log::warning('[StockTransferController] Firebase notification dispatch error: ' . $notifEx->getMessage());
+            }
 
             return response()->json([
                 'success' => true,

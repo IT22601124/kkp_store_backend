@@ -44,9 +44,12 @@ class AuthController extends Controller
 
             // 4. Create authentication token
             $token = $user->createToken('auth_token')->plainTextToken;
-            
-            
 
+            // Store or update FCM device token if provided
+            $fcmToken = $request->input('fcm_token') ?? $request->input('device_token');
+            if (!empty($fcmToken)) {
+                $user->update(['fcm_token' => $fcmToken]);
+            }
             // 5. Return successful response
             return $this->successResponse(
                 [

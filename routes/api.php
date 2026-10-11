@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\BankAccountController;
 use App\Http\Controllers\BranchController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\HealthController;
@@ -42,6 +43,8 @@ Route::get('/login', function() { return response()->json(['success' => false, '
 Route::post('/v1/mobile/rep/login', [MobileRepAuthController::class, 'login']);
 Route::post('/v1/rep/login', [MobileRepAuthController::class, 'login']);
 Route::get('/v1/mobile/rep/health', [MobileRepAuthController::class, 'checkHealth']);
+Route::get('/v1/mobile/bank-accounts/active', [BankAccountController::class, 'getActiveAccounts']);
+Route::get('/v1/bank-accounts/active', [BankAccountController::class, 'getActiveAccounts']);
 
 // Authenticated Routes
 Route::middleware('auth:sanctum')->group(function () {
@@ -53,6 +56,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/v1/mobile/rep/logout', [MobileRepAuthController::class, 'logout']);
     Route::get('/v1/mobile/rep/check-token', [MobileRepAuthController::class, 'checkToken']);
     Route::post('/v1/mobile/rep/check-token', [MobileRepAuthController::class, 'checkToken']);
+    Route::post('/v1/mobile/rep/fcm-token', [MobileRepAuthController::class, 'updateFcmToken']);
+    Route::post('/v1/fcm-token', [MobileRepAuthController::class, 'updateFcmToken']);
 
     // Mobile Rep Item Routes
     Route::get('/v1/mobile/items', [MobileItemController::class, 'index']);
@@ -65,6 +70,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/v1/shops/route', [MobileShopController::class, 'getShopsByRoute']);
     
     // Mobile Shop Routes (v1 & standard)
+    Route::get('/v1/mobile/shops/today-sales', [MobileShopController::class, 'getTodaySalesWithShops']);
+    Route::get('/v1/shops/today-sales', [MobileShopController::class, 'getTodaySalesWithShops']);
+    Route::get('/v1/mobile/shops/{id}/today-sales', [MobileShopController::class, 'getShopTodaySales']);
+    Route::get('/v1/shops/{id}/today-sales', [MobileShopController::class, 'getShopTodaySales']);
     Route::get('/v1/mobile/shops/today-visited', [MobileShopController::class, 'getTodayVisitedShops']);
     Route::get('/v1/shops/today-visited', [MobileShopController::class, 'getTodayVisitedShops']);
     Route::get('/v1/mobile/shops/credit', [MobileShopController::class, 'getCreditShops']);
@@ -93,6 +102,22 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('targets', TargetController::class);
     Route::apiResource('payroll', PayrollController::class);
 
+    // Agent Bank Account Management Routes
+    Route::get('/bank-accounts-summary', [BankAccountController::class, 'getAccountSummary']);
+    Route::get('/v1/bank-accounts-summary', [BankAccountController::class, 'getAccountSummary']);
+    Route::match(['patch', 'post'], '/bank-accounts/{id}/toggle-status', [BankAccountController::class, 'toggleStatus']);
+    Route::match(['patch', 'post'], '/v1/bank-accounts/{id}/toggle-status', [BankAccountController::class, 'toggleStatus']);
+    Route::match(['patch', 'post'], '/bank-accounts/{id}/set-default', [BankAccountController::class, 'setDefault']);
+    Route::match(['patch', 'post'], '/v1/bank-accounts/{id}/set-default', [BankAccountController::class, 'setDefault']);
+    Route::post('/bank-deposits', [BankAccountController::class, 'recordDeposit']);
+    Route::post('/v1/bank-deposits', [BankAccountController::class, 'recordDeposit']);
+    Route::apiResource('bank-accounts', BankAccountController::class);
+    Route::get('/v1/bank-accounts', [BankAccountController::class, 'index']);
+    Route::post('/v1/bank-accounts', [BankAccountController::class, 'store']);
+    Route::get('/v1/bank-accounts/{id}', [BankAccountController::class, 'show']);
+    Route::put('/v1/bank-accounts/{id}', [BankAccountController::class, 'update']);
+    Route::delete('/v1/bank-accounts/{id}', [BankAccountController::class, 'destroy']);
+
     Route::apiResource('branches', BranchController::class);
     Route::apiResource('reps', RepController::class);
     Route::apiResource('categories', CategoryController::class);
@@ -116,12 +141,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/v1/rep-stocks/available', [RepStockController::class, 'getAllRepsAvailableStock']);
     Route::get('/v1/rep-stocks/rep/{repId}', [RepStockController::class, 'getByRep']);
     Route::get('/v1/rep-stocks/{id}', [RepStockController::class, 'show']);
-    Route::post('/v1/rep-stocks/issue-stock', [RepStockController::class,'issueStockForRep']);
+    Route::post('/rep-stocks/issue-stock', [RepStockController::class, 'issueStockForRep']);
+    Route::post('/v1/rep-stocks/issue-stock', [RepStockController::class, 'issueStockForRep']);
     Route::get('/stock-movements', [StockMovementController::class, 'index']);
     Route::apiResource('stock-transfers', StockTransferController::class);
+    Route::apiResource('v1/stock-transfers', StockTransferController::class)->names('v1.stock-transfers');
     Route::get('/stock-requests', [StockRequestController::class, 'index']);
     Route::post('/stock-requests', [StockRequestController::class, 'store']);
     Route::get('/stock-requests/{stockRequest}', [StockRequestController::class, 'show']);
+    Route::post('/stock-requests/status', [StockRequestController::class, 'updateStatus']);
+    Route::post('/stock-requests/update-status', [StockRequestController::class, 'updateStatus']);
     Route::get('/v1/stock-requests', [StockRequestController::class, 'index']);
     Route::post('/v1/stock-requests', [StockRequestController::class, 'store']);
     Route::get('/v1/stock-requests/{stockRequest}', [StockRequestController::class, 'show']);
@@ -139,6 +168,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/v1/daily-settlements/{id}/status', [MobileSaleController::class, 'updateDailySettlementStatus']);
     Route::get('/v1/mobile/shops/{id}/credit-sales', [MobileSaleController::class, 'getShopCreditSales']);
     Route::get('/v1/shops/{id}/credit-sales', [MobileSaleController::class, 'getShopCreditSales']);
+    Route::get('/v1/mobile/sales/today', [MobileSaleController::class, 'getTodaySales']);
+    Route::get('/v1/sales/today', [MobileSaleController::class, 'getTodaySales']);
     Route::get('/v1/mobile/sales', [MobileSaleController::class, 'index']);
     Route::post('/v1/mobile/sales', [MobileSaleController::class, 'store']);
     Route::get('/v1/mobile/sales/{id}', [MobileSaleController::class, 'show']);

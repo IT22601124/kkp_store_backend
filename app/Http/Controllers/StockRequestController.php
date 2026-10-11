@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\StockRequestCreated;
 use App\Http\Traits\ApiResponse;
 use App\Models\StockRequest;
+use App\Traits\FirebaseNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -11,7 +13,7 @@ use Throwable;
 
 class StockRequestController extends Controller
 {
-    use ApiResponse;
+    use ApiResponse, FirebaseNotification;
 
     /** List requests. Rep accounts only see their own requests. */
     public function index(Request $request)
@@ -73,6 +75,42 @@ class StockRequestController extends Controller
                 return $stockRequest->load(['rep', 'branch', 'items.item']);
             });
 
+            // Broadcast real-time event to Web Dashboard via Pusher
+            try {
+                event(new StockRequestCreated($stockRequest));
+                Log::info("[StockRequestController] StockRequestCreated event broadcasted via Pusher for Request #{$stockRequest->id} ({$stockRequest->request_code})");
+            } catch (Throwable $broadcastError) {
+                Log::warning('[StockRequestController] Real-time Pusher broadcast warning: ' . $broadcastError->getMessage());
+            }
+
+            // Broadcast real-time event to Web Dashboard via Firebase
+            try {
+                $repName = $stockRequest->rep->name ?? 'Sales Rep';
+                $repCode = $stockRequest->rep->dsrProfile->rep_code ?? "REP-{$stockRequest->rep_id}";
+                $itemsCount = $stockRequest->items ? $stockRequest->items->count() : 0;
+                $branchName = $stockRequest->branch->name ?? 'Main Warehouse';
+
+                $this->sendFirebaseTopicNotification(
+                    'stock_requests',
+                    '📦 New Stock Requisition',
+                    "Rep {$repName} ({$repCode}) submitted a stock request for {$itemsCount} item(s).",
+                    [
+                        'type' => 'stock_requested',
+                        'request_id' => (string) $stockRequest->id,
+                        'request_code' => (string) $stockRequest->request_code,
+                        'rep_id' => (string) $stockRequest->rep_id,
+                        'rep_name' => (string) $repName,
+                        'rep_code' => (string) $repCode,
+                        'branch_name' => (string) $branchName,
+                        'items_count' => (string) $itemsCount,
+                        'created_at' => now()->toIso8601String(),
+                    ]
+                );
+                Log::info("[StockRequestController] Firebase topic notification sent to 'stock_requests' for Request #{$stockRequest->id}");
+            } catch (Throwable $notifError) {
+                Log::warning('[StockRequestController] Firebase topic notification warning: ' . $notifError->getMessage());
+            }
+
             return $this->successResponse($stockRequest, 'Stock request submitted successfully', 201);
         } catch (Throwable $th) {
             return $this->errorResponse('Failed to submit stock request', 500, $th->getMessage());
@@ -111,6 +149,26 @@ class StockRequestController extends Controller
             $targetStatus = $validated['status'] === 'ACCEPTED' ? 'APPROVED' : $validated['status'];
             $stockRequest->update(['status' => $targetStatus]);
             $stockRequest->load(['rep', 'branch', 'items.item']);
+
+            // Dispatch Firebase notification if approved
+            if ($targetStatus === 'APPROVED' && $stockRequest->rep && !empty($stockRequest->rep->fcm_token)) {
+                try {
+                    $this->sendFirebaseNotification(
+                        $stockRequest->rep->fcm_token,
+                        '✅ Stock Request Approved',
+                        "Your stock request #{$stockRequest->request_code} has been approved by the warehouse supervisor.",
+                        [
+                            'type' => 'stock_request_approved',
+                            'request_id' => (string) $stockRequest->id,
+                            'request_code' => (string) $stockRequest->request_code,
+                            'click_action' => 'FLUTTER_NOTIFICATION_CLICK',
+                        ]
+                    );
+                    Log::info("[StockRequestController] Firebase notification sent to Rep #{$stockRequest->rep_id} for approved request #{$stockRequest->id}");
+                } catch (Throwable $notifEx) {
+                    Log::warning('[StockRequestController] Firebase notification dispatch error: ' . $notifEx->getMessage());
+                }
+            }
 
             return $this->successResponse(
                 $stockRequest,

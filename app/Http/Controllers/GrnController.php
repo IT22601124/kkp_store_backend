@@ -36,6 +36,7 @@ class GrnController extends Controller
             'items.*.item_id' => 'required|exists:items,id',
             'items.*.quantity_received' => 'required|integer|min:1',
             'items.*.unit_price' => 'required|numeric|min:0',
+            'items.*.batch_number' => 'nullable|string',
             'notes' => 'nullable|string'
         ]);
 
@@ -51,11 +52,16 @@ class GrnController extends Controller
                     $subtotal = $qty * $unitPrice;
                     $totalValue += $subtotal;
 
+                    $batchNumber = !empty($line['batch_number']) 
+                        ? trim($line['batch_number']) 
+                        : 'BATCH-' . date('Ymd') . '-' . strtoupper(substr(uniqid(), -4));
+
                     $lineDetails[] = [
                         'item' => $item,
                         'qty' => $qty,
                         'unitPrice' => $unitPrice,
-                        'subtotal' => $subtotal
+                        'subtotal' => $subtotal,
+                        'batchNumber' => $batchNumber,
                     ];
                 }
 
@@ -74,13 +80,15 @@ class GrnController extends Controller
                 foreach ($lineDetails as $line) {
                     $item = $line['item'];
                     $qty = $line['qty'];
+                    $batchNumber = $line['batchNumber'];
 
-                    // Update Branch Warehouse Stock
+                    // Update Branch Warehouse Stock for this specific batch
                     $stock = Stock::firstOrCreate(
                         [
                             'branch_id' => $validated['branch_id'],
                             'referrer_id' => null,
-                            'item_id' => $item->id
+                            'item_id' => $item->id,
+                            'batch_number' => $batchNumber,
                         ],
                         [
                             'quantity' => 0,
@@ -109,12 +117,13 @@ class GrnController extends Controller
                         'reference_type' => GoodsReceivedNote::class,
                         'reference_id' => $grnRecord->id,
                         'performed_by' => $validated['received_by'],
-                        'notes' => "Supplier GRN intake invoice #{$validated['supplier_invoice_no']}"
+                        'notes' => "Supplier GRN intake invoice #{$validated['supplier_invoice_no']} (Batch: {$batchNumber})"
                     ]);
 
                     GrnItem::create([
                         'goods_received_note_id' => $grnRecord->id,
                         'item_id' => $item->id,
+                        'batch_number' => $batchNumber,
                         'quantity_received' => $qty,
                         'unit_price' => $line['unitPrice'],
                         'total_amount' => $line['subtotal']
