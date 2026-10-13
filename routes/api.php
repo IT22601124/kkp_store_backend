@@ -68,6 +68,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Fetch Shops By Route (Uses query route_id / URL parameter or assigned_route_id of rep)
     Route::get('/v1/shops/route', [MobileShopController::class, 'getShopsByRoute']);
+    Route::get('/v1/mobile/shops/route', [MobileShopController::class, 'getShopsByRoute']);
     
     // Mobile Shop Routes (v1 & standard)
     Route::get('/v1/mobile/shops/today-sales', [MobileShopController::class, 'getTodaySalesWithShops']);

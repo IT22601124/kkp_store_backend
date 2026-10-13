@@ -6,7 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Traits\ApiResponse;
 use App\Models\Shop;
 use App\Models\ShopGpsLocation;
-use App\Models\DistributionRoute;
+use App\Models\Route;
 use App\Models\Sale;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -167,13 +167,6 @@ class MobileShopController extends Controller
                 ]);
             }
 
-            // Increment route's shop count if route exists
-            if ($routeId) {
-                $route = DistributionRoute::find($routeId);
-                if ($route) {
-                    $route->increment('total_shops_count');
-                }
-            }
 
             return $this->successResponse(
                 $this->formatShop($shop),
@@ -235,13 +228,6 @@ class MobileShopController extends Controller
             // Delete shop
             $shop->delete();
 
-            // Decrement total_shops_count on route if applicable
-            if ($routeId) {
-                $route = DistributionRoute::find($routeId);
-                if ($route && $route->total_shops_count > 0) {
-                    $route->decrement('total_shops_count');
-                }
-            }
 
             return $this->successResponse(
                 ['id' => (int)$id],
@@ -259,20 +245,43 @@ class MobileShopController extends Controller
         }
     }
 
-    public function getShopsByRoute(Request $request){
-        try{
-            $allShop = Shop::where('route_id', $request->route_id)->get();
-            if (!$allShop) {
-                return $this->errorResponse('Shop not found', 404);
+    /**
+     * Fetch shops assigned to a specific route.
+     * Uses query/input route_id or routeId, or falls back to the authenticated DSR rep's assigned_route_id.
+     */
+    public function getShopsByRoute(Request $request)
+    {
+        try {
+            $user = $request->user();
+            $routeId = $request->input('route_id') ?? $request->input('routeId');
+
+            // Fallback to rep's assigned route from DSR profile if not explicitly passed
+            if (!$routeId && $user && $user->dsrProfile) {
+                $routeId = $user->dsrProfile->assigned_route_id;
             }
+
+            if (!$routeId) {
+                return $this->errorResponse('Route ID (route_id / routeId) is required or user has no assigned route', 422);
+            }
+
+            $shops = Shop::where('route_id', $routeId)
+                ->orderBy('id', 'desc')
+                ->get();
+
+            $formatted = $shops->map(fn($s) => $this->formatShop($s));
+
             return $this->successResponse(
-                $allShop,
-                'Shop details retrieved successfully',
+                $formatted,
+                "Shops for route ID {$routeId} retrieved successfully",
                 200
             );
-        }
-        catch(Throwable $th){
-            return $this->errorResponse('',500);
+        } catch (Throwable $th) {
+            Log::error('MobileShopController getShopsByRoute error: ' . $th->getMessage());
+            return $this->errorResponse(
+                'Failed to retrieve shops for route',
+                500,
+                $th->getMessage()
+            );
         }
     }
 
