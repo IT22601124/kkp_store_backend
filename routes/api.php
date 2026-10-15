@@ -53,6 +53,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Mobile Rep Authenticated Routes
     Route::get('/v1/mobile/rep/me', [MobileRepAuthController::class, 'me']);
+    Route::post('/v1/mobile/rep/avatar', [MobileRepAuthController::class, 'updateAvatar']);
     Route::post('/v1/mobile/rep/logout', [MobileRepAuthController::class, 'logout']);
     Route::get('/v1/mobile/rep/check-token', [MobileRepAuthController::class, 'checkToken']);
     Route::post('/v1/mobile/rep/check-token', [MobileRepAuthController::class, 'checkToken']);

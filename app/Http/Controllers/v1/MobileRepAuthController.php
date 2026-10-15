@@ -8,6 +8,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Throwable;
 
 class MobileRepAuthController extends Controller
@@ -128,6 +129,40 @@ class MobileRepAuthController extends Controller
                 $th->getMessage()
             );
         }
+    }
+
+    /** Save or replace the authenticated user's avatar. */
+    public function updateAvatar(Request $request)
+    {
+        $validated = $request->validate([
+            'avatar' => 'required|image|mimes:jpeg,jpg,png,webp|max:5120',
+        ]);
+
+        $user = $request->user();
+        $previousPath = $user->avatar_path;
+        $newPath = $validated['avatar']->store('avatars/' . $user->id, 'public');
+
+        if (!$newPath) {
+            return $this->errorResponse('Avatar could not be saved', 500);
+        }
+
+        try {
+            $user->avatar_path = $newPath;
+            $user->save();
+        } catch (Throwable $th) {
+            Storage::disk('public')->delete($newPath);
+            throw $th;
+        }
+
+        if ($previousPath && $previousPath !== $newPath) {
+            Storage::disk('public')->delete($previousPath);
+        }
+
+        return $this->successResponse(
+            ['user' => $user->fresh()],
+            'Avatar updated successfully',
+            200
+        );
     }
 
     /**
