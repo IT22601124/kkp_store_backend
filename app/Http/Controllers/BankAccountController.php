@@ -8,6 +8,7 @@ use App\Models\DsrBankDeposit;
 use App\Models\DsrTrip;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Throwable;
@@ -126,6 +127,7 @@ class BankAccountController extends Controller
                 201
             );
         } catch (ValidationException $ve) {
+            Log::info($ve->getMessage());
             DB::rollBack();
             return $this->errorResponse(
                 'Validation failed',
