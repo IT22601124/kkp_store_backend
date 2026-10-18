@@ -19,7 +19,18 @@ class BranchController extends Controller
     public function index()
     {
         try {
-            $branches = Branch::latest()->get();
+            $branches = Branch::with(['stocks' => function ($q) {
+                $q->whereNull('referrer_id');
+            }])->latest()->get()->map(function ($branch) {
+                $actualStockSum = (float) $branch->stocks->sum(function ($s) {
+                    return (float) ($s->total_value ?? ($s->quantity * $s->unit_cost));
+                });
+                $branch->total_warehouse_stock_value = $actualStockSum;
+                $branch->warehouse_items_count = $branch->stocks->count();
+                $branch->warehouse_total_units = (int) $branch->stocks->sum('quantity');
+                unset($branch->stocks);
+                return $branch;
+            });
 
             return $this->successResponse(
                 $branches,
@@ -75,7 +86,9 @@ class BranchController extends Controller
     public function show($id)
     {
         try {
-            $branch = Branch::find($id);
+            $branch = Branch::with(['stocks' => function ($q) {
+                $q->whereNull('referrer_id')->with('item.category');
+            }])->find($id);
 
             if (!$branch) {
                 return $this->errorResponse(
@@ -83,6 +96,13 @@ class BranchController extends Controller
                     404
                 );
             }
+
+            $actualStockSum = (float) $branch->stocks->sum(function ($s) {
+                return (float) ($s->total_value ?? ($s->quantity * $s->unit_cost));
+            });
+            $branch->total_warehouse_stock_value = $actualStockSum;
+            $branch->warehouse_items_count = $branch->stocks->count();
+            $branch->warehouse_total_units = (int) $branch->stocks->sum('quantity');
 
             return $this->successResponse(
                 $branch,

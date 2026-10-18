@@ -11,6 +11,7 @@ use App\Models\SalePayment;
 use App\Models\Shop;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Throwable;
 
@@ -19,12 +20,87 @@ class SaleController extends Controller
     use ApiResponse;
 
     /**
+     * Resolve slip image path from file upload, base64 data, or pre-uploaded path.
+     */
+    protected function resolveSlipPath(Request $request, ?array $paymentItem = null): ?string
+    {
+        // 1. Check payment-specific file
+        if ($paymentItem && !empty($paymentItem['slip_file'])) {
+            $file = $paymentItem['slip_file'];
+            if ($file instanceof \Illuminate\Http\UploadedFile && $file->isValid()) {
+                return $file->store('bank_slips', 'public');
+            }
+        }
+
+        // 2. Check top-level files across common field names
+        $file = $request->file('bank_slip')
+            ?? $request->file('slip_image')
+            ?? $request->file('slip')
+            ?? $request->file('image');
+
+        if ($file && $file->isValid()) {
+            return $file->store('bank_slips', 'public');
+        }
+
+        // 3. Check payment-specific string (base64 or path)
+        if ($paymentItem) {
+            $pSlip = $paymentItem['slip_image'] ?? $paymentItem['bank_slip'] ?? $paymentItem['slip'] ?? null;
+            if (is_string($pSlip) && trim($pSlip) !== '') {
+                $pSlip = trim($pSlip);
+                if (preg_match('/^data:image\/(\w+);base64,/', $pSlip, $type)) {
+                    $raw = substr($pSlip, strpos($pSlip, ',') + 1);
+                    $decoded = base64_decode($raw);
+                    if ($decoded !== false) {
+                        $ext = strtolower($type[1]) === 'jpeg' ? 'jpg' : strtolower($type[1]);
+                        $path = 'bank_slips/' . uniqid('slip_', true) . '.' . $ext;
+                        Storage::disk('public')->put($path, $decoded);
+                        return $path;
+                    }
+                } elseif (strlen($pSlip) > 200 && base64_decode($pSlip, true)) {
+                    $decoded = base64_decode($pSlip);
+                    $path = 'bank_slips/' . uniqid('slip_', true) . '.jpg';
+                    Storage::disk('public')->put($path, $decoded);
+                    return $path;
+                }
+                return $pSlip;
+            }
+        }
+
+        // 4. Check top-level string input
+        $input = $request->input('bank_slip')
+            ?? $request->input('slip_image')
+            ?? $request->input('slip');
+
+        if (is_string($input) && trim($input) !== '') {
+            $input = trim($input);
+            if (preg_match('/^data:image\/(\w+);base64,/', $input, $type)) {
+                $raw = substr($input, strpos($input, ',') + 1);
+                $decoded = base64_decode($raw);
+                if ($decoded !== false) {
+                    $ext = strtolower($type[1]) === 'jpeg' ? 'jpg' : strtolower($type[1]);
+                    $path = 'bank_slips/' . uniqid('slip_', true) . '.' . $ext;
+                    Storage::disk('public')->put($path, $decoded);
+                    return $path;
+                }
+            } elseif (strlen($input) > 200 && base64_decode($input, true)) {
+                $decoded = base64_decode($input);
+                $path = 'bank_slips/' . uniqid('slip_', true) . '.jpg';
+                Storage::disk('public')->put($path, $decoded);
+                return $path;
+            }
+            return $input;
+        }
+
+        return null;
+    }
+
+    /**
      * Display a listing of sales.
      */
     public function index(Request $request)
     {
         try {
-            $query = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount']);
+            $query = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount', 'payments.verifiedBy']);
 
             if ($request->has('rep_id')) {
                 $query->where('rep_id', $request->query('rep_id'));
@@ -58,6 +134,41 @@ class SaleController extends Controller
                 $query->whereDate('sale_date', '<=', $request->query('date_to'));
             }
 
+            if ($request->has('has_bank_slip')) {
+                $hasSlip = filter_var($request->query('has_bank_slip'), FILTER_VALIDATE_BOOLEAN);
+                if ($hasSlip) {
+                    $query->whereHas('payments', function ($pq) {
+                        $pq->whereNotNull('slip_image');
+                    });
+                } else {
+                    $query->whereDoesntHave('payments', function ($pq) {
+                        $pq->whereNotNull('slip_image');
+                    });
+                }
+            }
+
+            if ($request->filled('bank_account_id')) {
+                $bankId = $request->query('bank_account_id');
+                $query->whereHas('payments', function ($pq) use ($bankId) {
+                    $pq->where('bank_account_id', $bankId);
+                });
+            }
+
+            if ($request->filled('search')) {
+                $search = $request->query('search');
+                $query->where(function ($q) use ($search) {
+                    $q->where('sale_code', 'like', "%{$search}%")
+                      ->orWhere('notes', 'like', "%{$search}%")
+                      ->orWhereHas('shop', function ($sq) use ($search) {
+                          $sq->where('name', 'like', "%{$search}%")
+                            ->orWhere('owner_name', 'like', "%{$search}%");
+                      })
+                      ->orWhereHas('payments', function ($pq) use ($search) {
+                          $pq->where('reference_number', 'like', "%{$search}%");
+                      });
+                });
+            }
+
             $sales = $query->orderBy('id', 'desc')->get();
 
             return $this->successResponse(
@@ -86,7 +197,7 @@ class SaleController extends Controller
             'branch_id' => 'nullable|integer|exists:branches,id',
             'dsr_trip_id' => 'nullable|integer|exists:dsr_trips,id',
             'sale_date' => 'nullable|date',
-            'payment_type' => 'nullable|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD,SPLIT',
+            'payment_type' => 'nullable|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD,SPLIT,BANK_TRANSFER,TRANSFER',
             'status' => 'nullable|string|in:PENDING,COMPLETED,CANCELLED',
             'discount' => 'nullable|numeric|min:0',
             'tax' => 'nullable|numeric|min:0',
@@ -100,13 +211,17 @@ class SaleController extends Controller
             'items.*.batch_number' => 'nullable|string',
             'bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
             'reference_number' => 'nullable|string',
+            'bank_slip' => 'nullable',
+            'slip_image' => 'nullable',
             'payments' => 'nullable|array',
             'payments.*.bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
-            'payments.*.payment_type' => 'required_with:payments|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD',
+            'payments.*.payment_type' => 'required_with:payments|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD,BANK_TRANSFER,TRANSFER',
             'payments.*.amount' => 'required_with:payments|numeric|min:0',
             'payments.*.reference_number' => 'nullable|string',
             'payments.*.payment_date' => 'nullable|date',
             'payments.*.notes' => 'nullable|string',
+            'payments.*.slip_image' => 'nullable',
+            'payments.*.bank_slip' => 'nullable',
         ]);
 
         if ($validator->fails()) {
@@ -117,8 +232,9 @@ class SaleController extends Controller
             $user = $request->user();
             $repId = $request->input('rep_id') ?? ($user ? $user->id : null);
             $userId = $request->input('user_id') ?? ($user ? $user->id : null);
+            $globalSlipPath = $this->resolveSlipPath($request);
 
-            $sale = DB::transaction(function () use ($request, $repId, $userId) {
+            $sale = DB::transaction(function () use ($request, $repId, $userId, $globalSlipPath) {
                 $lineDetails = [];
                 $calculatedSubtotal = 0;
 
@@ -156,13 +272,16 @@ class SaleController extends Controller
                         $pType = strtoupper($p['payment_type']);
                         $pAmount = (float) $p['amount'];
                         $pBankId = $p['bank_account_id'] ?? $request->input('bank_account_id') ?? null;
-                        $pRef = $p['reference_number'] ?? null;
+                        $pRef = $p['reference_number'] ?? $request->input('reference_number') ?? null;
                         $pDate = $p['payment_date'] ?? $request->input('sale_date') ?? now();
                         $pNotes = $p['notes'] ?? null;
+                        $pSlip = $this->resolveSlipPath($request, $p) ?? $globalSlipPath;
 
                         if ($pType !== 'CREDIT') {
                             $paidAmount += $pAmount;
                         }
+
+                        $isBank = in_array($pType, ['ONLINE', 'BANK_TRANSFER', 'TRANSFER']) || !empty($pBankId) || !empty($pSlip);
 
                         $paymentRecords[] = [
                             'payment_type' => $pType,
@@ -171,6 +290,8 @@ class SaleController extends Controller
                             'reference_number' => $pRef,
                             'payment_date' => $pDate,
                             'notes' => $pNotes,
+                            'slip_image' => $pSlip,
+                            'status' => $isBank ? 'PENDING' : 'CONFIRMED',
                         ];
                     }
 
@@ -180,6 +301,7 @@ class SaleController extends Controller
                 } else {
                     $paidAmount = (float) ($request->input('paid_amount') ?? ($paymentType === 'CREDIT' ? 0.00 : $totalAmount));
                     if ($paidAmount > 0) {
+                        $isBank = in_array($paymentType, ['ONLINE', 'BANK_TRANSFER', 'TRANSFER']) || $request->filled('bank_account_id') || !empty($globalSlipPath);
                         $paymentRecords[] = [
                             'payment_type' => $paymentType,
                             'amount' => $paidAmount,
@@ -187,6 +309,8 @@ class SaleController extends Controller
                             'reference_number' => $request->input('reference_number'),
                             'payment_date' => $request->input('sale_date') ?? now(),
                             'notes' => $request->input('notes'),
+                            'slip_image' => $globalSlipPath,
+                            'status' => $isBank ? 'PENDING' : 'CONFIRMED',
                         ];
                     }
                 }
@@ -234,6 +358,8 @@ class SaleController extends Controller
                         'reference_number' => $pRecord['reference_number'],
                         'payment_date' => $pRecord['payment_date'],
                         'notes' => $pRecord['notes'],
+                        'slip_image' => $pRecord['slip_image'] ?? null,
+                        'status' => $pRecord['status'] ?? 'CONFIRMED',
                     ]);
 
                     if (!empty($pRecord['bank_account_id']) && $pRecord['amount'] > 0) {
@@ -249,7 +375,7 @@ class SaleController extends Controller
                     }
                 }
 
-                return $saleRecord->load(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount']);
+                return $saleRecord->load(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount', 'payments.verifiedBy']);
             });
 
             return $this->successResponse($sale, 'Sale recorded successfully', 201);
@@ -264,7 +390,7 @@ class SaleController extends Controller
     public function show($id)
     {
         try {
-            $sale = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount'])->find($id);
+            $sale = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount', 'payments.verifiedBy'])->find($id);
 
             if (!$sale) {
                 return $this->errorResponse('Sale not found', 404);
@@ -290,24 +416,31 @@ class SaleController extends Controller
 
             $validator = Validator::make($request->all(), [
                 'status' => 'nullable|string|in:PENDING,COMPLETED,CANCELLED',
-                'payment_type' => 'nullable|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD,SPLIT',
+                'payment_type' => 'nullable|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD,SPLIT,BANK_TRANSFER,TRANSFER',
                 'paid_amount' => 'nullable|numeric|min:0',
                 'notes' => 'nullable|string',
                 'bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
+                'reference_number' => 'nullable|string',
+                'bank_slip' => 'nullable',
+                'slip_image' => 'nullable',
                 'payments' => 'nullable|array',
                 'payments.*.bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
-                'payments.*.payment_type' => 'required_with:payments|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD',
+                'payments.*.payment_type' => 'required_with:payments|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD,BANK_TRANSFER,TRANSFER',
                 'payments.*.amount' => 'required_with:payments|numeric|min:0',
                 'payments.*.reference_number' => 'nullable|string',
                 'payments.*.payment_date' => 'nullable|date',
                 'payments.*.notes' => 'nullable|string',
+                'payments.*.slip_image' => 'nullable',
+                'payments.*.bank_slip' => 'nullable',
             ]);
 
             if ($validator->fails()) {
                 return $this->errorResponse('Validation failed', 422, $validator->errors()->first());
             }
 
-            DB::transaction(function () use ($request, $sale) {
+            $globalSlipPath = $this->resolveSlipPath($request);
+
+            DB::transaction(function () use ($request, $sale, $globalSlipPath) {
                 if ($request->has('status')) {
                     $sale->status = $request->input('status');
                 }
@@ -329,19 +462,24 @@ class SaleController extends Controller
                         $pType = strtoupper($p['payment_type']);
                         $pAmount = (float) $p['amount'];
                         $pBankId = $p['bank_account_id'] ?? $request->input('bank_account_id') ?? null;
+                        $pSlip = $this->resolveSlipPath($request, $p) ?? $globalSlipPath;
 
                         if ($pType !== 'CREDIT') {
                             $newPaidAmount += $pAmount;
                         }
+
+                        $isBank = in_array($pType, ['ONLINE', 'BANK_TRANSFER', 'TRANSFER']) || !empty($pBankId) || !empty($pSlip);
 
                         SalePayment::create([
                             'sale_id' => $sale->id,
                             'bank_account_id' => $pBankId,
                             'payment_type' => $pType,
                             'amount' => $pAmount,
-                            'reference_number' => $p['reference_number'] ?? null,
+                            'reference_number' => $p['reference_number'] ?? $request->input('reference_number') ?? null,
                             'payment_date' => $p['payment_date'] ?? now(),
                             'notes' => $p['notes'] ?? null,
+                            'slip_image' => $pSlip,
+                            'status' => $isBank ? 'PENDING' : 'CONFIRMED',
                         ]);
 
                         if (!empty($pBankId) && $pAmount > 0) {
@@ -363,7 +501,7 @@ class SaleController extends Controller
             });
 
             return $this->successResponse(
-                $sale->load(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount']),
+                $sale->load(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount', 'payments.verifiedBy']),
                 'Sale updated successfully',
                 200
             );

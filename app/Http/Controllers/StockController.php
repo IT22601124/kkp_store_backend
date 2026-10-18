@@ -9,7 +9,7 @@ class StockController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Stock::with(['branch', 'referrer', 'item']);
+        $query = Stock::with(['branch', 'referrer', 'item.category']);
 
         if ($request->has('branch_id')) {
             $query->where('branch_id', $request->query('branch_id'));
@@ -17,7 +17,7 @@ class StockController extends Controller
 
         if ($request->has('referrer_id')) {
             $query->where('referrer_id', $request->query('referrer_id'));
-        } else {
+        } elseif (!$request->boolean('all')) {
             $query->whereNull('referrer_id');
         }
 
@@ -36,7 +36,7 @@ class StockController extends Controller
 
     public function show($id)
     {
-        $stock = Stock::with(['branch', 'referrer', 'item', 'movements'])->find($id);
+        $stock = Stock::with(['branch', 'referrer', 'item.category', 'movements'])->find($id);
 
         if (!$stock) {
             return response()->json([
@@ -55,10 +55,16 @@ class StockController extends Controller
     {
         try {
             $branch_id = $request->user()->branch_id ?? $request->user()->dsrProfile?->branch_id ?? $request->query('branch_id');
-            $query = Stock::with(['branch', 'referrer', 'item']);
+            $query = Stock::with(['branch', 'referrer', 'item.category']);
 
             if ($branch_id) {
                 $query->where('branch_id', $branch_id);
+            }
+
+            if ($request->has('referrer_id')) {
+                $query->where('referrer_id', $request->query('referrer_id'));
+            } elseif (!$request->boolean('all')) {
+                $query->whereNull('referrer_id');
             }
 
             $stocks = $query->orderBy('updated_at', 'desc')->get();

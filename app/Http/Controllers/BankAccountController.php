@@ -152,10 +152,10 @@ class BankAccountController extends Controller
         try {
             $account = BankAccount::with([
                 'salePayments' => function ($q) {
-                    $q->latest()->limit(10);
+                    $q->with('sale.shop')->latest()->limit(15);
                 },
                 'dsrBankDeposits' => function ($q) {
-                    $q->latest()->limit(10);
+                    $q->with('rep:id,name,phone')->latest()->limit(15);
                 }
             ])->find($id);
 
@@ -426,11 +426,29 @@ class BankAccountController extends Controller
                 'amount'               => 'required|numeric|min:0.01',
                 'deposit_date'         => 'nullable|date',
                 'slip_reference'       => 'nullable|string|max:255',
-                'deposit_slip_image'   => 'nullable|string',
+                'deposit_slip_image'   => 'nullable',
+                'bank_slip'            => 'nullable',
+                'slip_image'           => 'nullable',
                 'dsr_trip_id'          => 'nullable|integer|exists:dsr_trips,id',
                 'daily_settlement_id'  => 'nullable|integer|exists:daily_settlements,id',
                 'notes'                => 'nullable|string',
             ]);
+
+            $slipPath = null;
+            $file = $request->file('deposit_slip_image')
+                ?? $request->file('bank_slip')
+                ?? $request->file('slip_image');
+
+            if ($file && $file->isValid()) {
+                $slipPath = $file->store('bank_slips', 'public');
+            } else {
+                $slipInput = $request->input('deposit_slip_image')
+                    ?? $request->input('bank_slip')
+                    ?? $request->input('slip_image');
+                if (is_string($slipInput) && trim($slipInput) !== '') {
+                    $slipPath = trim($slipInput);
+                }
+            }
 
             DB::beginTransaction();
 
@@ -445,7 +463,7 @@ class BankAccountController extends Controller
                 'deposit_date'        => $validated['deposit_date'] ?? now()->format('Y-m-d'),
                 'amount'              => (float) $validated['amount'],
                 'slip_reference'      => $validated['slip_reference'] ?? null,
-                'deposit_slip_image'  => $validated['deposit_slip_image'] ?? null,
+                'deposit_slip_image'  => $slipPath,
                 'status'              => 'CONFIRMED',
                 'notes'               => $validated['notes'] ?? null,
             ]);

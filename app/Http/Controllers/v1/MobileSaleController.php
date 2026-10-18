@@ -15,12 +15,88 @@ use App\Models\SalePayment;
 use App\Models\Shop;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Throwable;
 
 class MobileSaleController extends Controller
 {
     use ApiResponse;
+
+    /**
+     * Resolve slip image path from file upload, base64 data, or pre-uploaded path.
+     */
+    protected function resolveSlipPath(Request $request, ?array $paymentItem = null): ?string
+    {
+        // 1. Check payment-specific file
+        if ($paymentItem && !empty($paymentItem['slip_file'])) {
+            $file = $paymentItem['slip_file'];
+            if ($file instanceof \Illuminate\Http\UploadedFile && $file->isValid()) {
+                return $file->store('bank_slips', 'public');
+            }
+        }
+
+        // 2. Check top-level files across common field names
+        $file = $request->file('bank_slip')
+            ?? $request->file('slip_image')
+            ?? $request->file('slip')
+            ?? $request->file('image');
+
+        if ($file && $file->isValid()) {
+            return $file->store('bank_slips', 'public');
+        }
+
+        // 3. Check payment-specific string (base64 or path)
+        if ($paymentItem) {
+            $pSlip = $paymentItem['slip_image'] ?? $paymentItem['bank_slip'] ?? $paymentItem['slip'] ?? null;
+            if (is_string($pSlip) && trim($pSlip) !== '') {
+                $pSlip = trim($pSlip);
+                if (preg_match('/^data:image\/(\w+);base64,/', $pSlip, $type)) {
+                    $raw = substr($pSlip, strpos($pSlip, ',') + 1);
+                    $decoded = base64_decode($raw);
+                    if ($decoded !== false) {
+                        $ext = strtolower($type[1]) === 'jpeg' ? 'jpg' : strtolower($type[1]);
+                        $path = 'bank_slips/' . uniqid('slip_', true) . '.' . $ext;
+                        Storage::disk('public')->put($path, $decoded);
+                        return $path;
+                    }
+                } elseif (strlen($pSlip) > 200 && base64_decode($pSlip, true)) {
+                    $decoded = base64_decode($pSlip);
+                    $path = 'bank_slips/' . uniqid('slip_', true) . '.jpg';
+                    Storage::disk('public')->put($path, $decoded);
+                    return $path;
+                }
+                return $pSlip;
+            }
+        }
+
+        // 4. Check top-level string input
+        $input = $request->input('bank_slip')
+            ?? $request->input('slip_image')
+            ?? $request->input('slip');
+
+        if (is_string($input) && trim($input) !== '') {
+            $input = trim($input);
+            if (preg_match('/^data:image\/(\w+);base64,/', $input, $type)) {
+                $raw = substr($input, strpos($input, ',') + 1);
+                $decoded = base64_decode($raw);
+                if ($decoded !== false) {
+                    $ext = strtolower($type[1]) === 'jpeg' ? 'jpg' : strtolower($type[1]);
+                    $path = 'bank_slips/' . uniqid('slip_', true) . '.' . $ext;
+                    Storage::disk('public')->put($path, $decoded);
+                    return $path;
+                }
+            } elseif (strlen($input) > 200 && base64_decode($input, true)) {
+                $decoded = base64_decode($input);
+                $path = 'bank_slips/' . uniqid('slip_', true) . '.jpg';
+                Storage::disk('public')->put($path, $decoded);
+                return $path;
+            }
+            return $input;
+        }
+
+        return null;
+    }
 
     /** List sales belonging to the authenticated rep. */
     public function index(Request $request)
@@ -120,7 +196,7 @@ class MobileSaleController extends Controller
             'shop_id' => 'nullable|integer|exists:shops,id',
             'dsr_trip_id' => 'nullable|integer|exists:dsr_trips,id',
             'sale_date' => 'nullable|date',
-            'payment_type' => 'nullable|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD,SPLIT',
+            'payment_type' => 'nullable|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD,SPLIT,BANK_TRANSFER,TRANSFER',
             'status' => 'nullable|string|in:PENDING,COMPLETED,CANCELLED',
             'discount' => 'nullable|numeric|min:0',
             'tax' => 'nullable|numeric|min:0',
@@ -133,13 +209,18 @@ class MobileSaleController extends Controller
             'items.*.discount' => 'nullable|numeric|min:0',
             'items.*.batch_number' => 'nullable|string',
             'bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
+            'reference_number' => 'nullable|string',
+            'bank_slip' => 'nullable',
+            'slip_image' => 'nullable',
             'payments' => 'nullable|array',
             'payments.*.bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
-            'payments.*.payment_type' => 'required_with:payments|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD',
+            'payments.*.payment_type' => 'required_with:payments|string|in:CASH,CREDIT,CHEQUE,ONLINE,CARD,BANK_TRANSFER,TRANSFER',
             'payments.*.amount' => 'required_with:payments|numeric|min:0',
             'payments.*.reference_number' => 'nullable|string',
             'payments.*.payment_date' => 'nullable|date',
             'payments.*.notes' => 'nullable|string',
+            'payments.*.slip_image' => 'nullable',
+            'payments.*.bank_slip' => 'nullable',
         ]);
 
         if ($validator->fails()) {
@@ -150,8 +231,9 @@ class MobileSaleController extends Controller
             $rep = $request->user();
             $rep->loadMissing('dsrProfile.branch');
             $branchId = $request->input('branch_id') ?? ($rep->dsrProfile?->branch_id ?? null);
+            $globalSlipPath = $this->resolveSlipPath($request);
 
-            $sale = DB::transaction(function () use ($request, $rep, $branchId) {
+            $sale = DB::transaction(function () use ($request, $rep, $branchId, $globalSlipPath) {
                 $lineDetails = [];
                 $calculatedSubtotal = 0;
 
@@ -189,13 +271,16 @@ class MobileSaleController extends Controller
                         $pType = strtoupper($p['payment_type']);
                         $pAmount = (float) $p['amount'];
                         $pBankId = $p['bank_account_id'] ?? $request->input('bank_account_id') ?? null;
-                        $pRef = $p['reference_number'] ?? null;
+                        $pRef = $p['reference_number'] ?? $request->input('reference_number') ?? null;
                         $pDate = $p['payment_date'] ?? $request->input('sale_date') ?? now();
                         $pNotes = $p['notes'] ?? null;
+                        $pSlip = $this->resolveSlipPath($request, $p) ?? $globalSlipPath;
 
                         if ($pType !== 'CREDIT') {
                             $paidAmount += $pAmount;
                         }
+
+                        $isBank = in_array($pType, ['ONLINE', 'BANK_TRANSFER', 'TRANSFER']) || !empty($pBankId) || !empty($pSlip);
 
                         $paymentRecords[] = [
                             'payment_type' => $pType,
@@ -204,6 +289,8 @@ class MobileSaleController extends Controller
                             'reference_number' => $pRef,
                             'payment_date' => $pDate,
                             'notes' => $pNotes,
+                            'slip_image' => $pSlip,
+                            'status' => $isBank ? 'PENDING' : 'CONFIRMED',
                         ];
                     }
 
@@ -213,13 +300,16 @@ class MobileSaleController extends Controller
                 } else {
                     $paidAmount = (float) ($request->input('paid_amount') ?? ($paymentType === 'CREDIT' ? 0.00 : $totalAmount));
                     if ($paidAmount > 0) {
+                        $isBank = in_array($paymentType, ['ONLINE', 'BANK_TRANSFER', 'TRANSFER']) || $request->filled('bank_account_id') || !empty($globalSlipPath);
                         $paymentRecords[] = [
                             'payment_type' => $paymentType,
                             'amount' => $paidAmount,
                             'bank_account_id' => $request->input('bank_account_id'),
-                            'reference_number' => null,
+                            'reference_number' => $request->input('reference_number'),
                             'payment_date' => $request->input('sale_date') ?? now(),
-                            'notes' => null,
+                            'notes' => $request->input('notes'),
+                            'slip_image' => $globalSlipPath,
+                            'status' => $isBank ? 'PENDING' : 'CONFIRMED',
                         ];
                     }
                 }
@@ -267,6 +357,8 @@ class MobileSaleController extends Controller
                         'reference_number' => $pRecord['reference_number'],
                         'payment_date' => $pRecord['payment_date'],
                         'notes' => $pRecord['notes'],
+                        'slip_image' => $pRecord['slip_image'] ?? null,
+                        'status' => $pRecord['status'] ?? 'CONFIRMED',
                     ]);
 
                     if (!empty($pRecord['bank_account_id']) && $pRecord['amount'] > 0) {
@@ -282,7 +374,7 @@ class MobileSaleController extends Controller
                     }
                 }
 
-                return $saleRecord->load(['shop', 'salesItems.item', 'payments.bankAccount']);
+                return $saleRecord->load(['shop', 'salesItems.item', 'payments.bankAccount', 'payments.verifiedBy']);
             });
 
             return $this->successResponse($sale, 'Mobile sale recorded successfully', 201);
@@ -296,7 +388,7 @@ class MobileSaleController extends Controller
     {
         try {
             $rep = $request->user();
-            $sale = Sale::with(['shop', 'salesItems.item', 'payments.bankAccount'])
+            $sale = Sale::with(['shop', 'salesItems.item', 'payments.bankAccount', 'payments.verifiedBy'])
                 ->where('rep_id', $rep->id)
                 ->find($id);
 
@@ -404,6 +496,8 @@ class MobileSaleController extends Controller
                                 break;
                             case 'ONLINE':
                             case 'CARD':
+                            case 'BANK_TRANSFER':
+                            case 'TRANSFER':
                                 $totalOnlineCollected += $amt;
                                 break;
                         }
@@ -419,6 +513,8 @@ class MobileSaleController extends Controller
                             break;
                         case 'ONLINE':
                         case 'CARD':
+                        case 'BANK_TRANSFER':
+                        case 'TRANSFER':
                             $totalOnlineCollected += $paid;
                             break;
                     }
@@ -574,6 +670,7 @@ class MobileSaleController extends Controller
                             'deposit_date'        => $date,
                             'amount'              => (float) $bd['amount'],
                             'slip_reference'      => $bd['slip_reference'] ?? null,
+                            'deposit_slip_image'  => $bd['deposit_slip_image'] ?? $bd['slip_image'] ?? null,
                             'status'              => 'CONFIRMED',
                             'notes'               => $bd['notes'] ?? null,
                         ]);

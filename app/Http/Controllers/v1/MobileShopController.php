@@ -329,6 +329,16 @@ class MobileShopController extends Controller
             'referenceNumber' => $payment->reference_number,
             'payment_date' => $payment->payment_date ? (is_string($payment->payment_date) ? $payment->payment_date : $payment->payment_date->toIso8601String()) : null,
             'notes' => $payment->notes,
+            'slip_image' => $payment->slip_image,
+            'slip_url' => $payment->slip_url,
+            'bank_slip_url' => $payment->bank_slip_url,
+            'status' => $payment->status ?? 'CONFIRMED',
+            'verified_at' => $payment->verified_at ? (is_string($payment->verified_at) ? $payment->verified_at : $payment->verified_at->toIso8601String()) : null,
+            'verified_by' => $payment->verifiedBy ? [
+                'id' => (int) $payment->verifiedBy->id,
+                'name' => $payment->verifiedBy->name,
+                'role' => $payment->verifiedBy->role,
+            ] : null,
             'bank_account' => $payment->bankAccount ? [
                 'id' => (int)$payment->bankAccount->id,
                 'bank_name' => $payment->bankAccount->bank_name,
@@ -393,7 +403,7 @@ class MobileShopController extends Controller
                 $date = now()->format('Y-m-d');
             }
 
-            $query = Sale::with(['shop', 'salesItems.item', 'payments.bankAccount'])
+            $query = Sale::with(['shop', 'salesItems.item', 'payments.bankAccount', 'payments.verifiedBy'])
                 ->whereDate('sale_date', $date);
 
             if ($repId) {
@@ -445,7 +455,7 @@ class MobileShopController extends Controller
                             match (strtoupper($p->payment_type)) {
                                 'CASH' => $cashCollected += $amt,
                                 'CHEQUE' => $chequeCollected += $amt,
-                                'ONLINE', 'CARD' => $onlineCollected += $amt,
+                                'ONLINE', 'CARD', 'BANK_TRANSFER', 'TRANSFER' => $onlineCollected += $amt,
                                 default => null,
                             };
                         }
@@ -454,7 +464,7 @@ class MobileShopController extends Controller
                         match (strtoupper($sale->payment_type)) {
                             'CASH' => $cashCollected += $pAmt,
                             'CHEQUE' => $chequeCollected += $pAmt,
-                            'ONLINE', 'CARD' => $onlineCollected += $pAmt,
+                            'ONLINE', 'CARD', 'BANK_TRANSFER', 'TRANSFER' => $onlineCollected += $pAmt,
                             default => null,
                         };
                     }
@@ -519,7 +529,7 @@ class MobileShopController extends Controller
                         match (strtoupper($p->payment_type)) {
                             'CASH' => $overallCash += $amt,
                             'CHEQUE' => $overallCheque += $amt,
-                            'ONLINE', 'CARD' => $overallOnline += $amt,
+                            'ONLINE', 'CARD', 'BANK_TRANSFER', 'TRANSFER' => $overallOnline += $amt,
                             default => null,
                         };
                     }
@@ -528,7 +538,7 @@ class MobileShopController extends Controller
                     match (strtoupper($s->payment_type)) {
                         'CASH' => $overallCash += $pAmt,
                         'CHEQUE' => $overallCheque += $pAmt,
-                        'ONLINE', 'CARD' => $overallOnline += $pAmt,
+                        'ONLINE', 'CARD', 'BANK_TRANSFER', 'TRANSFER' => $overallOnline += $pAmt,
                         default => null,
                     };
                 }
@@ -600,7 +610,7 @@ class MobileShopController extends Controller
                 $date = now()->format('Y-m-d');
             }
 
-            $query = Sale::with(['salesItems.item', 'payments.bankAccount', 'rep'])
+            $query = Sale::with(['salesItems.item', 'payments.bankAccount', 'payments.verifiedBy', 'rep'])
                 ->where('shop_id', $id)
                 ->whereDate('sale_date', $date);
 
@@ -649,7 +659,7 @@ class MobileShopController extends Controller
                 $date = now()->format('Y-m-d');
             }
 
-            $query = Sale::with(['salesItems.item', 'payments.bankAccount'])
+            $query = Sale::with(['salesItems.item', 'payments.bankAccount', 'payments.verifiedBy'])
                 ->whereDate('sale_date', $date);
 
             if ($repId) {

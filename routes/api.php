@@ -26,6 +26,7 @@ use App\Http\Controllers\v1\MobileItemController;
 use App\Http\Controllers\v1\MobileShopController;
 use App\Http\Controllers\v1\UserShopController;
 use App\Http\Controllers\v1\MobileSaleController;
+use App\Http\Controllers\BankTransferController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -180,5 +181,24 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/v1/sales', [SaleController::class, 'store']);
     Route::get('/v1/sales/{id}', [SaleController::class, 'show']);
     Route::apiResource('sales', SaleController::class);
+
+    // Mobile Bank Slip Upload & Attachment Routes
+    Route::post('/v1/mobile/upload-bank-slip', [BankTransferController::class, 'uploadSlip']);
+    Route::post('/v1/upload-bank-slip', [BankTransferController::class, 'uploadSlip']);
+    Route::post('/upload-bank-slip', [BankTransferController::class, 'uploadSlip']);
+    Route::post('/v1/mobile/sales/{id}/bank-slip', [BankTransferController::class, 'attachSlipToSale']);
+    Route::post('/v1/sales/{id}/bank-slip', [BankTransferController::class, 'attachSlipToSale']);
+    Route::post('/sales/{id}/bank-slip', [BankTransferController::class, 'attachSlipToSale']);
+    Route::post('/v1/mobile/payments/{id}/bank-slip', [BankTransferController::class, 'attachSlipToPayment']);
+    Route::post('/v1/payments/{id}/bank-slip', [BankTransferController::class, 'attachSlipToPayment']);
+    Route::post('/payments/{id}/bank-slip', [BankTransferController::class, 'attachSlipToPayment']);
+
+    // Agent & Web Bank Transfer Verification Routes
+    Route::get('/bank-transfers', [BankTransferController::class, 'index']);
+    Route::get('/v1/bank-transfers', [BankTransferController::class, 'index']);
+    Route::get('/bank-transfers/{id}', [BankTransferController::class, 'show']);
+    Route::get('/v1/bank-transfers/{id}', [BankTransferController::class, 'show']);
+    Route::match(['post', 'put'], '/bank-transfers/{id}/verify', [BankTransferController::class, 'verify']);
+    Route::match(['post', 'put'], '/v1/bank-transfers/{id}/verify', [BankTransferController::class, 'verify']);
 
 });

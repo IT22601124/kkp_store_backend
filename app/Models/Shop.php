@@ -26,6 +26,14 @@ class Shop extends Model
         'created_by'
     ];
 
+    protected $appends = ['name'];
+
+    public function getNameAttribute(): ?string
+    {
+        return $this->attributes['shop_name'] ?? null;
+    }
+
+
     public function route()
     {
         return $this->belongsTo(Route::class, 'route_id');

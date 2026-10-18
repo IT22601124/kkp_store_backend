@@ -40,6 +40,19 @@ class Sale extends Model
         'due_amount' => 'decimal:2',
     ];
 
+    protected $appends = [
+        'bank_slip_url',
+    ];
+
+    public function getBankSlipUrlAttribute(): ?string
+    {
+        if ($this->relationLoaded('payments')) {
+            $slipPayment = $this->payments->first(fn($p) => !empty($p->slip_image));
+            return $slipPayment?->slip_url;
+        }
+        return null;
+    }
+
     public function salesItems()
     {
         return $this->hasMany(SaleItem::class, 'sale_id');

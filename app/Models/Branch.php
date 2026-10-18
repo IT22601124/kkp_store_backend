@@ -32,4 +32,12 @@ class Branch extends Model
             'total_warehouse_stock_value' => 'decimal:2',
         ];
     }
+
+    /**
+     * Get the stocks associated with the branch.
+     */
+    public function stocks()
+    {
+        return $this->hasMany(Stock::class, 'branch_id');
+    }
 }
