@@ -203,11 +203,22 @@ trait FirebaseNotification
                     'notification' => [
                         'sound'        => 'default',
                         'click_action' => 'FLUTTER_NOTIFICATION_CLICK',
+                        'channel_id' => config('services.firebase.android_channel_id', 'high_importance_channel'),
+                        'notification_priority' => 'PRIORITY_HIGH',
+                        'default_vibrate_timings' => true,
                     ],
                 ],
                 'apns' => [
+                    'headers' => [
+                        'apns-push-type' => 'alert',
+                        'apns-priority' => '10',
+                    ],
                     'payload' => [
                         'aps' => [
+                            'alert' => [
+                                'title' => (string) $params['title'],
+                                'body' => (string) $params['body'],
+                            ],
                             'sound' => 'default',
                         ],
                     ],

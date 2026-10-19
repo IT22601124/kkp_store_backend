@@ -110,7 +110,14 @@ class FirebaseNotificationTest extends TestCase
                 && $data['message']['notification']['image'] === 'https://example.com/logo.png'
                 && $data['message']['data']['request_id'] === '45'
                 && $data['message']['data']['status'] === 'APPROVED'
-                && $data['message']['android']['priority'] === 'HIGH';
+                && $data['message']['android']['priority'] === 'HIGH'
+                && $data['message']['android']['notification']['channel_id'] === 'high_importance_channel'
+                && $data['message']['android']['notification']['notification_priority'] === 'PRIORITY_HIGH'
+                && $data['message']['android']['notification']['default_vibrate_timings'] === true
+                && $data['message']['apns']['headers']['apns-push-type'] === 'alert'
+                && $data['message']['apns']['headers']['apns-priority'] === '10'
+                && $data['message']['apns']['payload']['aps']['alert']['title'] === 'New Stock Request Approved'
+                && $data['message']['apns']['payload']['aps']['alert']['body'] === 'Warehouse approved your stock requisition of 50 SIMs.';
         });
     }
 

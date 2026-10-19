@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\NotificationBroadcastController;
+use App\Http\Controllers\v1\MobileNotificationController;
 use App\Http\Controllers\BankAccountController;
 use App\Http\Controllers\BranchController;
 use App\Http\Controllers\CategoryController;
@@ -49,6 +51,11 @@ Route::get('/v1/bank-accounts/active', [BankAccountController::class, 'getActive
 
 // Authenticated Routes
 Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/notification-broadcasts', [NotificationBroadcastController::class, 'index']);
+    Route::post('/notification-broadcasts', [NotificationBroadcastController::class, 'store'])->middleware('throttle:6,1');
+    Route::get('/v1/mobile/notifications', [MobileNotificationController::class, 'index']);
+    Route::post('/v1/mobile/notifications/read-all', [MobileNotificationController::class, 'markAllRead']);
+    Route::post('/v1/mobile/notifications/{notification}/read', [MobileNotificationController::class, 'markRead'])->whereNumber('notification');
     Route::get('/check-token', [AuthController::class, 'checkToken']);
     Route::post('/check-token', [AuthController::class, 'checkToken']);
 
