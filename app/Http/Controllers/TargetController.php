@@ -24,7 +24,7 @@ class TargetController extends Controller
             $month = $date->month;
 
             $salesQuery = Sale::where('rep_id', $target->referrer_id)
-                ->whereYear('sale_date', $year)
+                ->where('status', 'COMPLETED')->whereYear('sale_date', $year)
                 ->whereMonth('sale_date', $month);
 
             $calculatedSales = (float)$salesQuery->sum('total_amount');
@@ -82,35 +82,30 @@ class TargetController extends Controller
         return response()->json(['success' => true, 'data' => $targets->map(fn($t) => $this->formatTarget($t))]);
     }
 
+    private function input(Request $request, bool $partial = false): array
+    {
+        foreach (['referrerId'=>'referrer_id', 'targetMonth'=>'target_month', 'targetAmount'=>'target_amount',
+            'achievedAmount'=>'achieved_amount', 'targetUnits'=>'target_units', 'achievedUnits'=>'achieved_units',
+            'commissionRatePercent'=>'commission_rate_percent'] as $alias=>$key) {
+            if (!$request->has($key) && $request->has($alias)) $request->merge([$key=>$request->input($alias)]);
+        }
+        $presence = $partial ? 'sometimes' : 'required';
+        $data = $request->validate(['referrer_id'=>$presence.'|integer|exists:users,id',
+            'target_month'=>$presence.'|date_format:Y-m', 'target_amount'=>$presence.'|numeric|min:0',
+            'achieved_amount'=>'sometimes|numeric|min:0', 'target_units'=>'sometimes|integer|min:0',
+            'achieved_units'=>'sometimes|integer|min:0', 'commission_rate_percent'=>'sometimes|numeric|between:0,100',
+            'status'=>'sometimes|in:ACTIVE,ACHIEVED,INACTIVE']);
+        if (isset($data['referrer_id']) && User::findOrFail($data['referrer_id'])->role !== 'DSR_REP') {
+            throw \Illuminate\Validation\ValidationException::withMessages(['referrer_id'=>'Select a sales representative.']);
+        }
+        return $data;
+    }
+
     public function store(Request $request)
     {
-        $referrerId = $request->input('referrer_id') ?? $request->input('referrerId') ?? 1;
-        $targetMonth = $request->input('target_month') ?? $request->input('targetMonth') ?? date('Y-m');
-        $targetAmount = (float)($request->input('target_amount') ?? $request->input('targetAmount') ?? 50000);
-        $achievedAmount = (float)($request->input('achieved_amount') ?? $request->input('achievedAmount') ?? 0);
-        $targetUnits = (float)($request->input('target_units') ?? $request->input('targetUnits') ?? 0);
-        $achievedUnits = (float)($request->input('achieved_units') ?? $request->input('achievedUnits') ?? 0);
-        $commissionRate = (float)($request->input('commission_rate_percent') ?? $request->input('commissionRatePercent') ?? 2.5);
-        $status = $request->input('status') ?? 'ACTIVE';
-
-        $target = MonthlyTarget::updateOrCreate(
-            [
-                'referrer_id' => $referrerId,
-                'target_month' => $targetMonth,
-            ],
-            [
-                'target_amount' => $targetAmount,
-                'achieved_amount' => $achievedAmount,
-                'target_units' => $targetUnits,
-                'achieved_units' => $achievedUnits,
-                'commission_rate_percent' => $commissionRate,
-                'status' => $status
-            ]
-        );
-
-        $target->load('referrer');
-
-        return response()->json(['success' => true, 'message' => 'Monthly target set successfully', 'data' => $this->formatTarget($target)], 201);
+        $data = $this->input($request);
+        $target = MonthlyTarget::updateOrCreate(['referrer_id'=>$data['referrer_id'], 'target_month'=>$data['target_month']], $data);
+        return response()->json(['success'=>true, 'data'=>$this->formatTarget($target->load('referrer'))], 201);
     }
 
     public function show($id)
@@ -125,32 +120,12 @@ class TargetController extends Controller
         $target = MonthlyTarget::find($id);
         if (!$target) return response()->json(['success' => false, 'message' => 'Target not found'], 404);
 
-        $payload = [];
-        if ($request->has('referrer_id') || $request->has('referrerId')) {
-            $payload['referrer_id'] = $request->input('referrer_id') ?? $request->input('referrerId');
+        $payload = $this->input($request, true);
+        if (isset($payload['referrer_id']) || isset($payload['target_month'])) {
+            $duplicate = MonthlyTarget::where('referrer_id', $payload['referrer_id'] ?? $target->referrer_id)
+                ->where('target_month', $payload['target_month'] ?? $target->target_month)->where('id', '!=', $target->id)->exists();
+            if ($duplicate) throw \Illuminate\Validation\ValidationException::withMessages(['target_month'=>'A target already exists for this representative and month.']);
         }
-        if ($request->has('target_month') || $request->has('targetMonth')) {
-            $payload['target_month'] = $request->input('target_month') ?? $request->input('targetMonth');
-        }
-        if ($request->has('target_amount') || $request->has('targetAmount')) {
-            $payload['target_amount'] = (float)($request->input('target_amount') ?? $request->input('targetAmount'));
-        }
-        if ($request->has('achieved_amount') || $request->has('achievedAmount')) {
-            $payload['achieved_amount'] = (float)($request->input('achieved_amount') ?? $request->input('achievedAmount'));
-        }
-        if ($request->has('target_units') || $request->has('targetUnits')) {
-            $payload['target_units'] = (float)($request->input('target_units') ?? $request->input('targetUnits'));
-        }
-        if ($request->has('achieved_units') || $request->has('achievedUnits')) {
-            $payload['achieved_units'] = (float)($request->input('achieved_units') ?? $request->input('achievedUnits'));
-        }
-        if ($request->has('commission_rate_percent') || $request->has('commissionRatePercent')) {
-            $payload['commission_rate_percent'] = (float)($request->input('commission_rate_percent') ?? $request->input('commissionRatePercent'));
-        }
-        if ($request->has('status')) {
-            $payload['status'] = $request->input('status');
-        }
-
         $target->update($payload);
         $target->load('referrer');
 

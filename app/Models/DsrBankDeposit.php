@@ -14,6 +14,9 @@ class DsrBankDeposit extends Model
 
     protected $fillable = [
         'bank_account_id',
+        'request_key',
+        'verified_by',
+        'verified_at',
         'rep_id',
         'dsr_trip_id',
         'daily_settlement_id',
@@ -26,6 +29,7 @@ class DsrBankDeposit extends Model
     ];
 
     protected $casts = [
+        'verified_at' => 'datetime',
         'deposit_date' => 'date',
         'amount' => 'decimal:2',
     ];

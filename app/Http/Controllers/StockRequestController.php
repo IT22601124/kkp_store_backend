@@ -147,6 +147,9 @@ class StockRequestController extends Controller
             }
 
             $targetStatus = $validated['status'] === 'ACCEPTED' ? 'APPROVED' : $validated['status'];
+            if ($targetStatus !== 'APPROVED' && \App\Models\StockTransfer::where('request_id', $stockRequest->id)->exists()) {
+                return $this->errorResponse('Issued requests cannot be reopened or rejected. Record a stock adjustment instead.', 422);
+            }
             $stockRequest->update(['status' => $targetStatus]);
             $stockRequest->load(['rep', 'branch', 'items.item']);
 

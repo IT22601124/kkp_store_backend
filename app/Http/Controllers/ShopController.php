@@ -6,6 +6,11 @@ use App\Models\Shop;
 use App\Models\Route;
 use App\Models\ShopGpsLocation;
 use Illuminate\Http\Request;
+use App\Services\RepAccess;
+use App\Models\Sale;
+use App\Models\SalePayment;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class ShopController extends Controller
 {
@@ -37,178 +42,61 @@ class ShopController extends Controller
         ];
     }
 
-    public function index()
+    public function index(Request $request)
     {
-        $shops = Shop::orderBy('id', 'desc')->get();
-        $formatted = $shops->map(fn($s) => $this->formatShop($s));
-
-        return response()->json([
-            'success' => true,
-            'data' => $formatted
-        ]);
+        return app(\App\Http\Controllers\v1\MobileShopController::class)->index($request);
     }
 
     public function store(Request $request)
     {
-        $routeId = $request->input('route_id') ?? $request->input('routeId') ?? 1;
-        $shopCode = $request->input('shop_code') ?? $request->input('shopCode');
-        $shopName = $request->input('shop_name') ?? $request->input('shopName') ?? $request->input('name') ?? 'Retail Outlet';
-        $ownerName = $request->input('owner_name') ?? $request->input('ownerName') ?? '';
-        $phone = $request->input('phone') ?? $request->input('contact_number') ?? $request->input('mobile') ?? '';
-        $address = $request->input('address') ?? '';
-        $lat = $request->input('latitude') ?? $request->input('lat');
-        $lng = $request->input('longitude') ?? $request->input('lng');
-        $accuracy = $request->input('accuracy');
-        $creditLimit = $request->input('credit_limit') ?? $request->input('creditLimit') ?? 100000;
-        $currentCreditBalance = $request->input('current_credit_balance') ?? $request->input('currentCreditBalance') ?? 0;
-        $status = $request->input('status') ?? 'GOOD';
-        $createdBy = $request->user() ? $request->user()->id : ($request->input('created_by') ?? $request->input('createdBy'));
-
-        if (empty($shopCode)) {
-            $count = Shop::count() + 1;
-            $prefix = 'SHP-' . date('Ymd') . '-';
-            $shopCode = $prefix . str_pad($count, 4, '0', STR_PAD_LEFT);
-            while (Shop::where('shop_code', $shopCode)->exists()) {
-                $count++;
-                $shopCode = $prefix . str_pad($count, 4, '0', STR_PAD_LEFT);
-            }
-        }
-
-        $shop = Shop::create([
-            'route_id' => $routeId,
-            'shop_code' => strtoupper($shopCode),
-            'shop_name' => $shopName,
-            'owner_name' => $ownerName,
-            'phone' => $phone,
-            'address' => $address,
-            'latitude' => $lat !== null ? (float)$lat : null,
-            'longitude' => $lng !== null ? (float)$lng : null,
-            'credit_limit' => (float)$creditLimit,
-            'current_credit_balance' => (float)$currentCreditBalance,
-            'status' => strtoupper($status),
-            'created_by' => $createdBy
-        ]);
-
-        if ($lat !== null && $lng !== null) {
-            ShopGpsLocation::create([
-                'shop_id' => $shop->id,
-                'latitude' => (float)$lat,
-                'longitude' => (float)$lng,
-                'accuracy' => $accuracy !== null ? (float)$accuracy : null,
-                'address_text' => $address,
-                'is_verified' => true
-            ]);
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Shop outlet created successfully',
-            'data' => $this->formatShop($shop)
-        ], 201);
+        return app(\App\Http\Controllers\v1\MobileShopController::class)->store($request);
     }
 
-    public function show($id)
+    public function show(Request $request, $id)
     {
-        $shop = Shop::find($id);
-        if (!$shop) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Shop outlet not found'
-            ], 404);
-        }
-
-        return response()->json([
-            'success' => true,
-            'data' => $this->formatShop($shop)
-        ]);
+        return app(\App\Http\Controllers\v1\MobileShopController::class)->show($request, (int) $id);
     }
 
     public function update(Request $request, $id)
     {
-        $shop = Shop::find($id);
-        if (!$shop) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Shop outlet not found'
-            ], 404);
-        }
-
-        $routeId = $request->input('route_id') ?? $request->input('routeId') ?? $shop->route_id;
-        $shopCode = $request->input('shop_code') ?? $request->input('shopCode') ?? $shop->shop_code;
-        $shopName = $request->input('shop_name') ?? $request->input('shopName') ?? $request->input('name') ?? $shop->shop_name;
-        $ownerName = $request->has('owner_name') || $request->has('ownerName') ? ($request->input('owner_name') ?? $request->input('ownerName')) : $shop->owner_name;
-        $phone = $request->has('phone') ? $request->input('phone') : $shop->phone;
-        $address = $request->has('address') ? $request->input('address') : $shop->address;
-        $lat = $request->has('latitude') || $request->has('lat') ? ($request->input('latitude') ?? $request->input('lat')) : $shop->latitude;
-        $lng = $request->has('longitude') || $request->has('lng') ? ($request->input('longitude') ?? $request->input('lng')) : $shop->longitude;
-        $creditLimit = $request->input('credit_limit') ?? $request.input('creditLimit') ?? $shop->credit_limit;
-        $currentCreditBalance = $request->input('current_credit_balance') ?? $request->input('currentCreditBalance') ?? $shop->current_credit_balance;
-        $status = $request->input('status') ?? $shop->status;
-
-        $shop->update([
-            'route_id' => $routeId,
-            'shop_code' => strtoupper($shopCode),
-            'shop_name' => $shopName,
-            'owner_name' => $ownerName,
-            'phone' => $phone,
-            'address' => $address,
-            'latitude' => $lat,
-            'longitude' => $lng,
-            'credit_limit' => $creditLimit,
-            'current_credit_balance' => $currentCreditBalance,
-            'status' => strtoupper($status)
-        ]);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Shop outlet updated successfully',
-            'data' => $this->formatShop($shop)
-        ]);
+        return app(\App\Http\Controllers\v1\MobileShopController::class)->update($request, (int) $id);
     }
 
-    public function destroy($id)
+    public function destroy(Request $request, $id)
     {
-        $shop = Shop::find($id);
-        if (!$shop) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Shop outlet not found'
-            ], 404);
-        }
-
-        $shop->delete();
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Shop outlet deleted successfully'
-        ]);
+        return app(\App\Http\Controllers\v1\MobileShopController::class)->destroy($request, (int) $id);
     }
 
     public function settleCredit(Request $request, $id)
     {
-        $shop = Shop::find($id);
-        if (!$shop) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Shop outlet not found'
-            ], 404);
-        }
-
-        $paymentAmount = (float)($request->input('amount') ?? $request->input('payment_amount') ?? $request->input('paymentAmount') ?? 0);
-        $newBalance = max(0, (float)$shop->current_credit_balance - $paymentAmount);
-
-        if ($request->has('current_credit_balance') || $request->has('currentCreditBalance')) {
-            $newBalance = (float)($request->input('current_credit_balance') ?? $request->input('currentCreditBalance'));
-        }
-
-        $shop->update([
-            'current_credit_balance' => $newBalance
-        ]);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Credit settlement recorded successfully',
-            'data' => $this->formatShop($shop)
-        ]);
+        $data = $request->validate(['amount' => 'required|numeric|min:0.01|decimal:0,2']);
+        $shop = RepAccess::shop($request->user(), (int) $id);
+        DB::transaction(function () use ($shop, $request, $data) {
+            $shop = Shop::whereKey($shop->id)->lockForUpdate()->firstOrFail();
+            $invoices = Sale::where('shop_id', $shop->id)->where('status', 'COMPLETED')->where('due_amount', '>', 0)
+                ->when($request->user()->role === 'DSR_REP', fn ($q) => $q->where('rep_id', $request->user()->id))
+                ->orderBy('sale_date')->orderBy('id')->lockForUpdate()->get();
+            $remaining = (int) round((float) $data['amount'] * 100);
+            if ($remaining > (int) round((float) $invoices->sum('due_amount') * 100)
+                || $remaining > (int) round((float) $shop->current_credit_balance * 100)) {
+                throw ValidationException::withMessages(['amount' => 'Amount exceeds your collectible invoice balance. Legacy shop debt needs reconciliation before collection.']);
+            }
+            foreach ($invoices as $sale) {
+                $taken = min($remaining, (int) round((float) $sale->due_amount * 100));
+                SalePayment::create([
+                    'sale_id' => $sale->id, 'collected_by' => $request->user()->id,
+                    'payment_type' => 'CASH', 'amount' => $taken / 100,
+                    'payment_date' => now(), 'status' => 'CONFIRMED', 'notes' => 'Credit collection',
+                ]);
+                $sale->update(['paid_amount' => round((float) $sale->paid_amount + $taken / 100, 2),
+                    'due_amount' => round((float) $sale->due_amount - $taken / 100, 2)]);
+                $remaining -= $taken;
+                if ($remaining === 0) {
+                    break;
+                }
+            }
+            $shop->decrement('current_credit_balance', (float) $data['amount']);
+        });
+        return response()->json(['success' => true, 'message' => 'Collection applied to oldest unpaid invoices', 'data' => $this->formatShop($shop->fresh())]);
     }
 }

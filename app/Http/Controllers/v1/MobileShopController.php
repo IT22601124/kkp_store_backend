@@ -11,6 +11,9 @@ use App\Models\Sale;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Throwable;
+use App\Services\RepAccess;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class MobileShopController extends Controller
 {
@@ -53,7 +56,7 @@ class MobileShopController extends Controller
     public function index(Request $request)
     {
         try {
-            $query = Shop::orderBy('id', 'desc');
+            $query = RepAccess::shops(Shop::query(), $request->user())->orderBy('id', 'desc');
 
             if ($request->has('route_id') || $request->has('routeId')) {
                 $routeId = $request->input('route_id') ?? $request->input('routeId');
@@ -91,158 +94,95 @@ class MobileShopController extends Controller
     /**
      * Create a new shop for mobile application.
      */
+    private function shopInput(Request $request, ?Shop $shop = null): array
+    {
+        foreach (['shop_name' => 'shopName', 'owner_name' => 'ownerName', 'route_id' => 'routeId',
+            'shop_code' => 'shopCode', 'credit_limit' => 'creditLimit', 'current_credit_balance' => 'currentCreditBalance'] as $key => $alias) {
+            if (!$request->has($key) && $request->has($alias)) {
+                $request->merge([$key => $request->input($alias)]);
+            }
+        }
+        $data = $request->validate([
+            'shop_name' => ($shop ? 'sometimes' : 'required').'|string|max:255',
+            'owner_name' => 'nullable|string|max:255',
+            'phone' => 'nullable|string|max:30', 'address' => 'nullable|string|max:2000',
+            'route_id' => 'nullable|integer|exists:routes,id',
+            'latitude' => 'nullable|numeric|between:-90,90', 'longitude' => 'nullable|numeric|between:-180,180',
+            'credit_limit' => 'nullable|numeric|min:0',
+            'current_credit_balance' => 'nullable|numeric|min:0',
+            'shop_code' => 'nullable|string|max:100|unique:shops,shop_code'.($shop ? ','.$shop->id : ''),
+            'accuracy' => 'nullable|numeric|min:0',
+            'status' => 'nullable|string|in:GOOD,OVERDUE,HOLD',
+        ]);
+        $user = $request->user();
+        $routeId = $data['route_id'] ?? $shop?->route_id ?? $user->dsrProfile?->assigned_route_id;
+        if (!$routeId) {
+            throw ValidationException::withMessages(['route_id' => 'A valid route is required.']);
+        }
+        if ($user->role === 'DSR_REP' && (int) $routeId !== (int) $user->dsrProfile?->assigned_route_id
+            && (!$shop || (int) $routeId !== (int) $shop->route_id)) {
+            abort(403, 'Use your assigned route.');
+        }
+        if (isset($data['current_credit_balance']) && (float) $data['current_credit_balance'] !== (float) ($shop?->current_credit_balance ?? 0)) {
+            throw ValidationException::withMessages(['current_credit_balance' => 'Record debt through invoices and collections.']);
+        }
+        unset($data['current_credit_balance']);
+        $data['route_id'] = $routeId;
+        return $data;
+    }
+
     public function store(Request $request)
     {
-        try {
-            // Flexible input mapping for both snake_case and camelCase
-            $shopName = $request->input('shop_name') ?? $request->input('shopName') ?? $request->input('name');
-            $ownerName = $request->input('owner_name') ?? $request->input('ownerName');
-            $phone = $request->input('phone') ?? $request->input('contact_number') ?? $request->input('mobile');
-            $address = $request->input('address');
-            $routeId = $request->input('route_id') ?? $request->input('routeId') ?? 1;
-            $shopCode = $request->input('shop_code') ?? $request->input('shopCode');
-            $lat = $request->input('latitude') ?? $request->input('lat');
-            $lng = $request->input('longitude') ?? $request->input('lng');
-            $accuracy = $request->input('accuracy');
-            $creditLimit = $request->input('credit_limit') ?? $request->input('creditLimit') ?? 100000.00;
-            $currentCreditBalance = $request->input('current_credit_balance') ?? $request->input('currentCreditBalance') ?? 0.00;
-            $status = $request->input('status') ?? 'GOOD';
-            $createdBy = $request->user() ? $request->user()->id : ($request->input('created_by') ?? $request->input('createdBy'));
+        $data = $this->shopInput($request);
+        $shop = DB::transaction(function () use ($data, $request) {
+            $data['shop_code'] = $data['shop_code'] ?? 'SHP-'.strtoupper(bin2hex(random_bytes(8)));
+            $data['created_by'] = $request->user()->id;
+            $shop = Shop::create($data);
+            $this->saveGps($shop, $request);
+            return $shop;
+        });
+        return $this->successResponse($this->formatShop($shop), 'Shop created successfully', 201);
+    }
 
-            // Validate mandatory fields
-            if (empty($shopName)) {
-                return $this->errorResponse('Shop name (shop_name / shopName) is required', 422);
-            }
+    public function update(Request $request, int $id)
+    {
+        $shop = RepAccess::shop($request->user(), $id);
+        $data = $this->shopInput($request, $shop);
+        DB::transaction(function () use ($data, $shop, $request) {
+            $shop->update($data);
+            $this->saveGps($shop, $request);
+        });
+        return $this->successResponse($this->formatShop($shop->fresh()), 'Shop updated successfully');
+    }
 
-            // Auto-generate shop code if missing
-            if (empty($shopCode)) {
-                $count = Shop::count() + 1;
-                $prefix = 'SHP-' . date('Ymd') . '-';
-                $shopCode = $prefix . str_pad($count, 4, '0', STR_PAD_LEFT);
-                
-                // Ensure uniqueness
-                while (Shop::where('shop_code', $shopCode)->exists()) {
-                    $count++;
-                    $shopCode = $prefix . str_pad($count, 4, '0', STR_PAD_LEFT);
-                }
-            } else {
-                $shopCode = strtoupper($shopCode);
-                // Check if shop_code is already taken
-                if (Shop::where('shop_code', $shopCode)->exists()) {
-                    return $this->errorResponse("Shop code '{$shopCode}' already exists", 422);
-                }
-            }
-
-            // Create shop model
-            $shop = Shop::create([
-                'route_id' => $routeId,
-                'shop_code' => $shopCode,
-                'shop_name' => $shopName,
-                'owner_name' => $ownerName ?? '',
-                'phone' => $phone ?? '',
-                'address' => $address ?? '',
-                'latitude' => $lat !== null ? (float)$lat : null,
-                'longitude' => $lng !== null ? (float)$lng : null,
-                'credit_limit' => (float)$creditLimit,
-                'current_credit_balance' => (float)$currentCreditBalance,
-                'status' => strtoupper($status),
-                'created_by' => $createdBy
+    private function saveGps(Shop $shop, Request $request): void
+    {
+        if ($shop->latitude !== null && $shop->longitude !== null) {
+            ShopGpsLocation::create([
+                'shop_id' => $shop->id, 'latitude' => $shop->latitude, 'longitude' => $shop->longitude,
+                'accuracy' => $request->input('accuracy'), 'captured_by_user_id' => $request->user()->id,
+                'address_text' => $shop->address ?? '', 'is_verified' => false,
             ]);
-
-            // If GPS coordinates provided, record in shop_gps_locations table as well
-            if ($lat !== null && $lng !== null) {
-                $userId = null;
-                if ($request->user()) {
-                    $userId = $request->user()->id;
-                }
-
-                ShopGpsLocation::create([
-                    'shop_id' => $shop->id,
-                    'latitude' => (float)$lat,
-                    'longitude' => (float)$lng,
-                    'accuracy' => $accuracy !== null ? (float)$accuracy : null,
-                    'captured_by_user_id' => $userId,
-                    'address_text' => $address ?? '',
-                    'is_verified' => true
-                ]);
-            }
-
-
-            return $this->successResponse(
-                $this->formatShop($shop),
-                'Shop created successfully via mobile API',
-                201
-            );
-
-        } catch (Throwable $th) {
-            Log::error('MobileShopController store error: ' . $th->getMessage());
-            return $this->errorResponse(
-                'Failed to create shop',
-                500,
-                $th->getMessage()
-            );
         }
     }
 
-    /**
-     * Get details of a single shop for mobile.
-     */
-    public function show($id)
+    public function show(Request $request, int $id)
     {
-        try {
-            $shop = Shop::find($id);
-            if (!$shop) {
-                return $this->errorResponse('Shop not found', 404);
-            }
-
-            return $this->successResponse(
-                $this->formatShop($shop),
-                'Shop details retrieved successfully',
-                200
-            );
-        } catch (Throwable $th) {
-            return $this->errorResponse(
-                'Failed to retrieve shop details',
-                500,
-                $th->getMessage()
-            );
-        }
+        return $this->successResponse($this->formatShop(RepAccess::shop($request->user(), $id)), 'Shop retrieved successfully');
     }
 
-    /**
-     * Delete a shop record for mobile application.
-     */
-    public function destroy($id)
+    public function destroy(Request $request, int $id)
     {
-        try {
-            $shop = Shop::find($id);
-            if (!$shop) {
-                return $this->errorResponse('Shop not found', 404);
+        $shop = RepAccess::shop($request->user(), $id);
+        DB::transaction(function () use ($shop) {
+            $shop = Shop::whereKey($shop->id)->lockForUpdate()->firstOrFail();
+            if ((float) $shop->current_credit_balance > 0 || Sale::where('shop_id', $shop->id)->exists()) {
+                throw ValidationException::withMessages(['shop' => 'Shops with invoice history or debt cannot be deleted.']);
             }
-
-            $routeId = $shop->route_id;
-
-            // Delete associated GPS location records if any
-            ShopGpsLocation::where('shop_id', $id)->delete();
-
-            // Delete shop
+            ShopGpsLocation::where('shop_id', $shop->id)->delete();
             $shop->delete();
-
-
-            return $this->successResponse(
-                ['id' => (int)$id],
-                'Shop deleted successfully',
-                200
-            );
-
-        } catch (Throwable $th) {
-            Log::error('MobileShopController destroy error: ' . $th->getMessage());
-            return $this->errorResponse(
-                'Failed to delete shop',
-                500,
-                $th->getMessage()
-            );
-        }
+        });
+        return $this->successResponse(['id' => $id], 'Shop deleted successfully');
     }
 
     /**
@@ -264,7 +204,7 @@ class MobileShopController extends Controller
                 return $this->errorResponse('Route ID (route_id / routeId) is required or user has no assigned route', 422);
             }
 
-            $shops = Shop::where('route_id', $routeId)
+            $shops = RepAccess::shops(Shop::query(), $request->user())->where('route_id', $routeId)
                 ->orderBy('id', 'desc')
                 ->get();
 
@@ -598,7 +538,7 @@ class MobileShopController extends Controller
     public function getShopTodaySales(Request $request, $id)
     {
         try {
-            $shop = Shop::find($id);
+            $shop = RepAccess::shops(Shop::query(), $request->user())->find($id);
             if (!$shop) {
                 return $this->errorResponse('Shop not found', 404);
             }
@@ -723,7 +663,7 @@ class MobileShopController extends Controller
     public function getCreditShops(Request $request)
     {
         try {
-            $shops = Shop::where('current_credit_balance', '>', 0)
+            $shops = RepAccess::shops(Shop::query(), $request->user())->where('current_credit_balance', '>', 0)
                 ->orderBy('current_credit_balance', 'desc')
                 ->get();
 

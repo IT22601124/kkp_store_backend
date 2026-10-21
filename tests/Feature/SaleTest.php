@@ -14,7 +14,7 @@ use Tests\TestCase;
 
 class SaleTest extends TestCase
 {
-    use RefreshDatabase;
+    use RefreshDatabase, \Tests\Support\IssuedRepStock;
 
     public function test_sale_has_many_sales_items_relationship(): void
     {
@@ -85,6 +85,8 @@ class SaleTest extends TestCase
             'selling_price' => 80.00,
             'status' => 'ACTIVE',
         ]);
+
+        $this->seedIssuedStock($user, $item);
 
         $response = $this->postJson('/api/v1/sales', [
             'payment_type' => 'CASH',

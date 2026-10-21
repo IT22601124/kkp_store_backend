@@ -20,7 +20,7 @@ use Tests\TestCase;
 
 class BankTransferSlipTest extends TestCase
 {
-    use RefreshDatabase;
+    use RefreshDatabase, \Tests\Support\IssuedRepStock;
 
     protected function setUp(): void
     {
@@ -61,6 +61,8 @@ class BankTransferSlipTest extends TestCase
 
         $rep = User::factory()->create(['role' => 'DSR_REP']);
         $agent = User::factory()->create(['role' => 'AGENT']);
+
+        $this->seedIssuedStock($rep, $item, $branch, $route);
 
         return compact('branch', 'shop', 'category', 'item', 'bankAccount', 'rep', 'agent');
     }

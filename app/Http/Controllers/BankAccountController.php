@@ -221,6 +221,12 @@ class BankAccountController extends Controller
                 'notes'           => 'nullable|string',
             ]);
 
+            foreach (['current_balance', 'opening_balance'] as $balanceField) {
+                if ($request->has($balanceField) && (int) round((float) $request->input($balanceField) * 100) !== (int) round((float) $account->$balanceField * 100)) {
+                    throw ValidationException::withMessages([$balanceField => 'Use ledger deposits or transfers to change bank balances.']);
+                }
+            }
+            unset($validated['current_balance'], $validated['opening_balance']);
             DB::beginTransaction();
 
             if ($request->has('is_default') && $request->boolean('is_default')) {
@@ -269,6 +275,12 @@ class BankAccountController extends Controller
 
             $paymentsCount = $account->salePayments()->count();
             $depositsCount = $account->dsrBankDeposits()->count();
+
+            $hasTransfers = \App\Models\BankFundTransfer::where('from_bank_account_id', $account->id)
+                ->orWhere('to_bank_account_id', $account->id)->exists();
+            if ($hasTransfers || (int) round((float) $account->current_balance * 100) !== 0) {
+                return $this->errorResponse('Accounts with balances or fund-transfer history must be deactivated instead of deleted.', 422);
+            }
 
             if ($paymentsCount > 0 || $depositsCount > 0) {
                 return $this->errorResponse(
@@ -422,6 +434,7 @@ class BankAccountController extends Controller
     {
         try {
             $validated = $request->validate([
+                'request_key' => 'nullable|uuid',
                 'bank_account_id'      => 'required|integer|exists:bank_accounts,id',
                 'amount'               => 'required|numeric|min:0.01',
                 'deposit_date'         => 'nullable|date',
@@ -452,10 +465,25 @@ class BankAccountController extends Controller
 
             DB::beginTransaction();
 
-            $account = BankAccount::findOrFail($validated['bank_account_id']);
+            $account = BankAccount::whereKey($validated['bank_account_id'])->lockForUpdate()->firstOrFail();
+            if (!$account->is_active) {
+                throw ValidationException::withMessages(['bank_account_id' => 'Use an active bank account.']);
+            }
+            if (!empty($validated['request_key'])) {
+                $existing = DsrBankDeposit::where('request_key', $validated['request_key'])->first();
+                if ($existing) {
+                    if ($existing->rep_id !== $request->user()->id || (int) $existing->bank_account_id !== (int) $account->id
+                        || (int) round((float) $existing->amount * 100) !== (int) round((float) $validated['amount'] * 100)) {
+                        throw ValidationException::withMessages(['request_key' => 'This request key belongs to another deposit.']);
+                    }
+                    DB::commit();
+                    return $this->successResponse(['deposit' => $existing->load('bankAccount'), 'updated_balance' => (float) $account->current_balance], 'Deposit already recorded', 201);
+                }
+            }
             $user = $request->user();
 
             $deposit = DsrBankDeposit::create([
+                'request_key' => $validated['request_key'] ?? null,
                 'bank_account_id'     => $account->id,
                 'rep_id'              => $user ? $user->id : null,
                 'dsr_trip_id'         => $validated['dsr_trip_id'] ?? null,

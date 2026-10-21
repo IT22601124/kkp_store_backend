@@ -45,137 +45,11 @@ class StockTransferController extends Controller
         ]);
 
         try {
-            $transfer = DB::transaction(function () use ($validated) {
-                $totalValue = 0;
-                $lineDetails = [];
+            $request->validate(['request_key' => 'nullable|uuid']);
+            [, $transfer] = app(\App\Services\StockIssuance::class)->issue((int) $validated['from_branch_id'],
+                (int) $validated['to_referrer_id'], $validated['items'], $request->user(), null,
+                $request->input('request_key'), $validated['notes'] ?? null);
 
-                // 1. Calculate subtotals & check source warehouse stock availability
-                foreach ($validated['items'] as $line) {
-                    $item = Item::findOrFail($line['item_id']);
-                    $qty = (int) $line['quantity'];
-                    $unitPrice = (float) $item->selling_price;
-                    $subtotal = $qty * $unitPrice;
-                    $totalValue += $subtotal;
-
-                    $lineDetails[] = [
-                        'item' => $item,
-                        'qty' => $qty,
-                        'unitPrice' => $unitPrice,
-                        'subtotal' => $subtotal,
-                        'batchNumber' => $line['batch_number'] ?? null,
-                    ];
-                }
-
-                // 2. Create StockTransfer Header
-                $transferCode = 'TRF-' . str_pad(StockTransfer::count() + 1, 5, '0', STR_PAD_LEFT);
-                $stockTransfer = StockTransfer::create([
-                    'transfer_code' => $transferCode,
-                    'from_branch_id' => $validated['from_branch_id'],
-                    'to_referrer_id' => $validated['to_referrer_id'],
-                    'transfer_date' => now(),
-                    'status' => 'ISSUED',
-                    'total_value' => $totalValue,
-                    'notes' => $validated['notes'] ?? null
-                ]);
-
-                // Create RepStock record
-                $repStock = RepStock::create([
-                    'rep_id' => $validated['to_referrer_id'],
-                    'total_value' => $totalValue,
-                    'status' => 'ACCEPTED',
-                ]);
-
-                // 3. Process each item: update source & target stocks + movement audit logs
-                foreach ($lineDetails as $line) {
-                    $item = $line['item'];
-                    $qty = $line['qty'];
-                    $batchNum = $line['batchNumber'] ?? null;
-
-                    // A. Update Source Branch Warehouse Stock (matching specific batch if provided)
-                    $stockQuery = Stock::where('branch_id', $validated['from_branch_id'])
-                        ->whereNull('referrer_id')
-                        ->where('item_id', $item->id);
-
-                    if ($batchNum) {
-                        $sourceStock = (clone $stockQuery)->where('batch_number', $batchNum)->first()
-                            ?? (clone $stockQuery)->where('quantity', '>', 0)->first()
-                            ?? $stockQuery->first();
-                    } else {
-                        $sourceStock = (clone $stockQuery)->where('quantity', '>', 0)->first()
-                            ?? $stockQuery->first();
-                    }
-
-                    if (!$sourceStock) {
-                        $sourceStock = Stock::create([
-                            'branch_id' => $validated['from_branch_id'],
-                            'referrer_id' => null,
-                            'item_id' => $item->id,
-                            'batch_number' => $batchNum,
-                            'quantity' => 0,
-                            'unit_cost' => $item->purchase_price,
-                            'unit_price' => $item->selling_price,
-                            'total_value' => 0.00
-                        ]);
-                    }
-
-                    $effectiveBatch = $batchNum ?? $sourceStock->batch_number;
-
-                    $sourceQtyBefore = $sourceStock->quantity;
-                    $sourceStock->quantity -= $qty;
-                    $sourceStock->total_value = $sourceStock->quantity * $sourceStock->unit_price;
-                    $sourceStock->save();
-
-                    StockMovement::create([
-                        'stock_id' => $sourceStock->id,
-                        'item_id' => $item->id,
-                        'branch_id' => $validated['from_branch_id'],
-                        'referrer_id' => null,
-                        'movement_type' => 'TRANSFER_OUT',
-                        'quantity_before' => $sourceQtyBefore,
-                        'quantity_change' => -$qty,
-                        'quantity_after' => $sourceStock->quantity,
-                        'reference_type' => StockTransfer::class,
-                        'reference_id' => $stockTransfer->id,
-                        'performed_by' => auth()->user()->name ?? 'Branch Supervisor',
-                        'notes' => "Stock issued to DSR Rep #{$validated['to_referrer_id']} (Batch: {$effectiveBatch})"
-                    ]);
-
-                    // B. Update Target DSR Rep Stock via AcceptedRequestItem
-                    AcceptedRequestItem::create([
-                        'rep_stock_id' => $repStock->id,
-                        'item_id' => $item->id,
-                        'quantity' => $qty,
-                        'batch_number' => $effectiveBatch,
-                    ]);
-
-                    StockMovement::create([
-                        'stock_id' => $sourceStock->id,
-                        'item_id' => $item->id,
-                        'branch_id' => $validated['from_branch_id'],
-                        'referrer_id' => $validated['to_referrer_id'],
-                        'movement_type' => 'TRANSFER_IN',
-                        'quantity_before' => 0,
-                        'quantity_change' => $qty,
-                        'quantity_after' => $qty,
-                        'reference_type' => StockTransfer::class,
-                        'reference_id' => $stockTransfer->id,
-                        'performed_by' => auth()->user()->name ?? 'Branch Supervisor',
-                        'notes' => "Stock received by Rep from Branch Warehouse #{$validated['from_branch_id']}"
-                    ]);
-
-                    // C. Create Transfer Line Item Record
-                    StockTransferItem::create([
-                        'stock_transfer_id' => $stockTransfer->id,
-                        'item_id' => $item->id,
-                        'batch_number' => $effectiveBatch,
-                        'quantity' => $qty,
-                        'unit_price' => $line['unitPrice'],
-                        'subtotal' => $line['subtotal']
-                    ]);
-                }
-
-                return $stockTransfer->load(['fromBranch', 'toReferrer', 'items.item']);
-            });
 
             // Dispatch Firebase Push Notification to the recipient Rep
             try {
@@ -227,6 +101,8 @@ class StockTransferController extends Controller
                 'message' => 'Stock transfer transmitted successfully',
                 'data' => $transfer
             ], 201);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -252,6 +128,8 @@ class StockTransferController extends Controller
                 'message' => 'Stock transfer retrieved successfully',
                 'data' => $transfer
             ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -262,66 +140,20 @@ class StockTransferController extends Controller
 
     public function update(Request $request, $id)
     {
-        try {
-            $transfer = StockTransfer::find($id);
-
-            if (!$transfer) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Stock transfer not found'
-                ], 404);
-            }
-
-            $validated = $request->validate([
-                'status' => 'nullable|string',
-                'notes' => 'nullable|string',
-                'from_branch_id' => 'nullable|exists:branches,id',
-                'to_referrer_id' => 'nullable|exists:users,id',
-                'total_value' => 'nullable|numeric'
-            ]);
-
-            $transfer->update(array_filter($validated, function ($value) {
-                return $value !== null;
-            }));
-
-            $transfer->load(['fromBranch', 'toReferrer', 'items.item']);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Stock transfer updated successfully',
-                'data' => $transfer
-            ]);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to update stock transfer: ' . $e->getMessage()
-            ], 500);
-        }
+        $transfer = StockTransfer::findOrFail($id);
+        $validated = $request->validate([
+            'notes' => 'nullable|string', 'status' => 'prohibited', 'items' => 'prohibited',
+            'from_branch_id' => 'prohibited', 'to_referrer_id' => 'prohibited', 'total_value' => 'prohibited',
+        ]);
+        $transfer->update($validated);
+        return response()->json(['success' => true, 'data' => $transfer->load(['fromBranch', 'toReferrer', 'items.item'])]);
     }
 
     public function destroy($id)
     {
-        try {
-            $transfer = StockTransfer::find($id);
-
-            if (!$transfer) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Stock transfer not found'
-                ], 404);
-            }
-
-            $transfer->delete();
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Stock transfer deleted successfully'
-            ]);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to delete stock transfer: ' . $e->getMessage()
-            ], 500);
-        }
+        StockTransfer::findOrFail($id);
+        throw \Illuminate\Validation\ValidationException::withMessages([
+            'stock_transfer' => 'Issued stock transfers are permanent. Record a stock return or adjustment instead.',
+        ]);
     }
 }

@@ -10,7 +10,7 @@ class StockTransfer extends Model
     use HasFactory;
 
     protected $fillable = [
-        'transfer_code',
+        'transfer_code', 'request_id', 'rep_stock_id', 'request_key', 'request_hash',
         'from_branch_id',
         'to_referrer_id',
         'transfer_date',
@@ -18,6 +18,11 @@ class StockTransfer extends Model
         'total_value',
         'notes'
     ];
+
+    public function repStock()
+    {
+        return $this->belongsTo(RepStock::class, 'rep_stock_id');
+    }
 
     public function fromBranch()
     {

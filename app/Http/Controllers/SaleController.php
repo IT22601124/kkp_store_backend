@@ -14,6 +14,10 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Throwable;
+use App\Services\RepAccess;
+use App\Services\RepInventory;
+use App\Models\User;
+use Illuminate\Validation\ValidationException;
 
 class SaleController extends Controller
 {
@@ -99,10 +103,13 @@ class SaleController extends Controller
      */
     public function index(Request $request)
     {
+        $request->validate(['start_date' => 'nullable|date', 'end_date' => 'nullable|date', 'date_from' => 'nullable|date', 'date_to' => 'nullable|date']);
         try {
             $query = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount', 'payments.verifiedBy']);
 
-            if ($request->has('rep_id')) {
+            if ($request->user()->role === 'DSR_REP') {
+                $query->where('rep_id', $request->user()->id);
+            } elseif ($request->has('rep_id')) {
                 $query->where('rep_id', $request->query('rep_id'));
             }
 
@@ -126,12 +133,12 @@ class SaleController extends Controller
                 $query->where('status', $request->query('status'));
             }
 
-            if ($request->has('date_from')) {
-                $query->whereDate('sale_date', '>=', $request->query('date_from'));
+            if ($request->filled('date_from') || $request->filled('start_date')) {
+                $query->whereDate('sale_date', '>=', $request->query('date_from') ?? $request->query('start_date'));
             }
 
-            if ($request->has('date_to')) {
-                $query->whereDate('sale_date', '<=', $request->query('date_to'));
+            if ($request->filled('date_to') || $request->filled('end_date')) {
+                $query->whereDate('sale_date', '<=', $request->query('date_to') ?? $request->query('end_date'));
             }
 
             if ($request->has('has_bank_slip')) {
@@ -160,7 +167,7 @@ class SaleController extends Controller
                     $q->where('sale_code', 'like', "%{$search}%")
                       ->orWhere('notes', 'like', "%{$search}%")
                       ->orWhereHas('shop', function ($sq) use ($search) {
-                          $sq->where('name', 'like', "%{$search}%")
+                          $sq->where('shop_name', 'like', "%{$search}%")
                             ->orWhere('owner_name', 'like', "%{$search}%");
                       })
                       ->orWhereHas('payments', function ($pq) use ($search) {
@@ -176,6 +183,8 @@ class SaleController extends Controller
                 'Sales retrieved successfully',
                 200
             );
+        } catch (\Illuminate\Validation\ValidationException | \Illuminate\Database\Eloquent\ModelNotFoundException | \Symfony\Component\HttpKernel\Exception\HttpException $th) {
+            throw $th;
         } catch (Throwable $th) {
             return $this->errorResponse(
                 'Failed to retrieve sales',
@@ -230,6 +239,22 @@ class SaleController extends Controller
 
         try {
             $user = $request->user();
+            if ($user->role === 'DSR_REP') {
+                $branchId = $user->dsrProfile?->branch_id;
+                if (!$branchId) {
+                    throw ValidationException::withMessages(['branch_id' => 'The rep needs an assigned branch.']);
+                }
+                $request->merge(['rep_id' => $user->id, 'user_id' => $user->id, 'branch_id' => $branchId]);
+                if ($request->filled('shop_id')) {
+                    RepAccess::shop($user, (int) $request->shop_id);
+                }
+                if ($request->input('status', 'COMPLETED') !== 'COMPLETED') {
+                    throw ValidationException::withMessages(['status' => 'Rep sales must be completed.']);
+                }
+                if ($request->filled('dsr_trip_id')) {
+                    abort_unless(\App\Models\DsrTrip::whereKey($request->dsr_trip_id)->where('referrer_id', $user->id)->exists(), 403);
+                }
+            }
             $repId = $request->input('rep_id') ?? ($user ? $user->id : null);
             $userId = $request->input('user_id') ?? ($user ? $user->id : null);
             $globalSlipPath = $this->resolveSlipPath($request);
@@ -243,7 +268,12 @@ class SaleController extends Controller
                     $qty = (int) $itemData['quantity'];
                     $unitPrice = isset($itemData['unit_price']) ? (float) $itemData['unit_price'] : (float) $item->selling_price;
                     $itemDiscount = isset($itemData['discount']) ? (float) $itemData['discount'] : 0.00;
-                    $lineSubtotal = ($qty * $unitPrice) - $itemDiscount;
+                    $unitPrice = round($unitPrice, 2);
+                    $itemDiscount = round($itemDiscount, 2);
+                    $lineSubtotal = round(($qty * $unitPrice) - $itemDiscount, 2);
+                    if ($lineSubtotal < 0 || $item->status !== 'ACTIVE') {
+                        throw ValidationException::withMessages(['items' => 'Use active items and discounts no greater than line value.']);
+                    }
 
                     $calculatedSubtotal += $lineSubtotal;
 
@@ -259,7 +289,10 @@ class SaleController extends Controller
 
                 $overallDiscount = (float) ($request->input('discount') ?? 0.00);
                 $tax = (float) ($request->input('tax') ?? 0.00);
-                $totalAmount = max(0, $calculatedSubtotal - $overallDiscount + $tax);
+                if ($overallDiscount > $calculatedSubtotal) {
+                    throw ValidationException::withMessages(['discount' => 'Discount exceeds subtotal.']);
+                }
+                $totalAmount = round($calculatedSubtotal - $overallDiscount + $tax, 2);
 
                 $hasPaymentsArray = $request->filled('payments') && is_array($request->input('payments')) && count($request->input('payments')) > 0;
                 $paymentType = strtoupper($request->input('payment_type', $hasPaymentsArray ? 'SPLIT' : 'CASH'));
@@ -270,7 +303,7 @@ class SaleController extends Controller
                 if ($hasPaymentsArray) {
                     foreach ($request->input('payments') as $p) {
                         $pType = strtoupper($p['payment_type']);
-                        $pAmount = (float) $p['amount'];
+                        $pAmount = round((float) $p['amount'], 2);
                         $pBankId = $p['bank_account_id'] ?? $request->input('bank_account_id') ?? null;
                         $pRef = $p['reference_number'] ?? $request->input('reference_number') ?? null;
                         $pDate = $p['payment_date'] ?? $request->input('sale_date') ?? now();
@@ -295,8 +328,13 @@ class SaleController extends Controller
                         ];
                     }
 
-                    if ($request->filled('paid_amount')) {
-                        $paidAmount = (float) $request->input('paid_amount');
+                    $paidAmount = round($paidAmount, 2);
+                    if ($request->filled('paid_amount') && (int) round($paidAmount * 100) !== (int) round((float) $request->paid_amount * 100)) {
+                        throw ValidationException::withMessages(['paid_amount' => 'Paid amount must equal the non-credit payment total.']);
+                    }
+                    $credit = collect($paymentRecords)->where('payment_type', 'CREDIT')->sum('amount');
+                    if ($credit > 0 && (int) round(($credit + $paidAmount) * 100) !== (int) round($totalAmount * 100)) {
+                        throw ValidationException::withMessages(['payments' => 'Split credit and payments must equal the invoice total.']);
                     }
                 } else {
                     $paidAmount = (float) ($request->input('paid_amount') ?? ($paymentType === 'CREDIT' ? 0.00 : $totalAmount));
@@ -315,8 +353,12 @@ class SaleController extends Controller
                     }
                 }
 
-                $dueAmount = max(0, $totalAmount - $paidAmount);
-                $saleCode = 'SALE-' . date('Ymd') . '-' . str_pad(Sale::count() + 1, 5, '0', STR_PAD_LEFT);
+                $paidAmount = round($paidAmount, 2);
+                if ($paidAmount > $totalAmount || ($paymentType === 'CREDIT' && $paidAmount > 0) || ($paymentType === 'SPLIT' && !$hasPaymentsArray)) {
+                    throw ValidationException::withMessages(['payments' => 'Invalid payment total or payment type.']);
+                }
+                $dueAmount = round($totalAmount - $paidAmount, 2);
+                $saleCode = 'SALE-' . now()->format('Ymd') . '-' . strtoupper(bin2hex(random_bytes(8)));
 
                 $saleRecord = Sale::create([
                     'sale_code' => $saleCode,
@@ -337,6 +379,10 @@ class SaleController extends Controller
                     'notes' => $request->input('notes'),
                 ]);
 
+                if ($saleRecord->status === 'COMPLETED' && $repId && User::find($repId)?->role === 'DSR_REP') {
+                    app(RepInventory::class)->consume((int) $repId, $lineDetails, $saleRecord->id);
+                }
+
                 foreach ($lineDetails as $line) {
                     SaleItem::create([
                         'sale_id' => $saleRecord->id,
@@ -350,7 +396,11 @@ class SaleController extends Controller
                 }
 
                 foreach ($paymentRecords as $pRecord) {
+                    if ($pRecord['payment_type'] === 'CREDIT') {
+                        continue;
+                    }
                     SalePayment::create([
+                        'collected_by' => $userId,
                         'sale_id' => $saleRecord->id,
                         'bank_account_id' => $pRecord['bank_account_id'] ?? null,
                         'payment_type' => $pRecord['payment_type'],
@@ -379,6 +429,8 @@ class SaleController extends Controller
             });
 
             return $this->successResponse($sale, 'Sale recorded successfully', 201);
+        } catch (\Illuminate\Validation\ValidationException | \Illuminate\Database\Eloquent\ModelNotFoundException | \Symfony\Component\HttpKernel\Exception\HttpException $th) {
+            throw $th;
         } catch (Throwable $th) {
             return $this->errorResponse('Failed to record sale: ' . $th->getMessage(), 500);
         }
@@ -387,16 +439,19 @@ class SaleController extends Controller
     /**
      * Display the specified sale.
      */
-    public function show($id)
+    public function show(Request $request, $id)
     {
         try {
-            $sale = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount', 'payments.verifiedBy'])->find($id);
+            $sale = Sale::with(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount', 'payments.verifiedBy'])
+                ->when($request->user()->role === 'DSR_REP', fn ($q) => $q->where('rep_id', $request->user()->id))->find($id);
 
             if (!$sale) {
                 return $this->errorResponse('Sale not found', 404);
             }
 
             return $this->successResponse($sale, 'Sale details retrieved successfully', 200);
+        } catch (\Illuminate\Validation\ValidationException | \Illuminate\Database\Eloquent\ModelNotFoundException | \Symfony\Component\HttpKernel\Exception\HttpException $th) {
+            throw $th;
         } catch (Throwable $th) {
             return $this->errorResponse('Failed to retrieve sale details', 500, $th->getMessage());
         }
@@ -407,6 +462,7 @@ class SaleController extends Controller
      */
     public function update(Request $request, $id)
     {
+        abort_unless(in_array($request->user()->role, ['AGENT', 'SYSTEM_ADMIN']), 403);
         try {
             $sale = Sale::find($id);
 
@@ -441,8 +497,29 @@ class SaleController extends Controller
             $globalSlipPath = $this->resolveSlipPath($request);
 
             DB::transaction(function () use ($request, $sale, $globalSlipPath) {
-                if ($request->has('status')) {
-                    $sale->status = $request->input('status');
+                if ($sale->rep_id) User::whereKey($sale->rep_id)->lockForUpdate()->first();
+                if ($sale->shop_id) Shop::whereKey($sale->shop_id)->lockForUpdate()->first();
+                $sale = Sale::whereKey($sale->id)->lockForUpdate()->firstOrFail();
+                // Completed invoices are accounting records. Cancel using the dedicated status transition.
+                $nextStatus = $request->input('status', $sale->status);
+                if ($nextStatus !== $sale->status && $nextStatus !== 'CANCELLED') {
+                    throw ValidationException::withMessages(['status' => 'Create a new invoice instead of reopening a sale.']);
+                }
+                if ($nextStatus === 'CANCELLED' && $sale->status !== 'CANCELLED') {
+                    $sale->refresh();
+                    if ($sale->rep_id) app(RepInventory::class)->restore((int) $sale->rep_id, $sale->id);
+                    if ($sale->shop_id && (float) $sale->due_amount > 0) {
+                        Shop::whereKey($sale->shop_id)->decrement('current_credit_balance', (float) $sale->due_amount);
+                    }
+                    foreach ($sale->payments as $payment) {
+                        if ($payment->bank_account_id && $payment->payment_type !== 'CREDIT' && $payment->status !== 'REJECTED') {
+                            BankAccount::whereKey($payment->bank_account_id)->decrement('current_balance', (float) $payment->amount);
+                        }
+                        $payment->update(['status' => 'REJECTED']);
+                    }
+                    $sale->paid_amount = 0;
+                    $sale->due_amount = 0;
+                    $sale->status = 'CANCELLED';
                 }
 
                 if ($request->has('payment_type')) {
@@ -453,58 +530,20 @@ class SaleController extends Controller
                     $sale->notes = $request->input('notes');
                 }
 
-                if ($request->filled('payments') && is_array($request->input('payments'))) {
-                    // Re-create payment records
-                    $sale->payments()->delete();
-                    $newPaidAmount = 0.00;
-
-                    foreach ($request->input('payments') as $p) {
-                        $pType = strtoupper($p['payment_type']);
-                        $pAmount = (float) $p['amount'];
-                        $pBankId = $p['bank_account_id'] ?? $request->input('bank_account_id') ?? null;
-                        $pSlip = $this->resolveSlipPath($request, $p) ?? $globalSlipPath;
-
-                        if ($pType !== 'CREDIT') {
-                            $newPaidAmount += $pAmount;
-                        }
-
-                        $isBank = in_array($pType, ['ONLINE', 'BANK_TRANSFER', 'TRANSFER']) || !empty($pBankId) || !empty($pSlip);
-
-                        SalePayment::create([
-                            'sale_id' => $sale->id,
-                            'bank_account_id' => $pBankId,
-                            'payment_type' => $pType,
-                            'amount' => $pAmount,
-                            'reference_number' => $p['reference_number'] ?? $request->input('reference_number') ?? null,
-                            'payment_date' => $p['payment_date'] ?? now(),
-                            'notes' => $p['notes'] ?? null,
-                            'slip_image' => $pSlip,
-                            'status' => $isBank ? 'PENDING' : 'CONFIRMED',
-                        ]);
-
-                        if (!empty($pBankId) && $pAmount > 0) {
-                            BankAccount::find($pBankId)?->increment('current_balance', $pAmount);
-                        }
-                    }
-
-                    $sale->paid_amount = $newPaidAmount;
-                    $sale->due_amount = max(0, $sale->total_amount - $sale->paid_amount);
-                    if ($sale->payment_type !== 'SPLIT') {
-                        $sale->payment_type = 'SPLIT';
-                    }
-                } elseif ($request->has('paid_amount')) {
-                    $sale->paid_amount = (float) $request->input('paid_amount');
-                    $sale->due_amount = max(0, $sale->total_amount - $sale->paid_amount);
+                if ($request->hasAny(['payments', 'paid_amount', 'payment_type', 'bank_account_id'])) {
+                    throw ValidationException::withMessages(['payments' => 'Use the collection endpoint to record payments; issued invoice payment records cannot be replaced.']);
                 }
 
                 $sale->save();
             });
 
             return $this->successResponse(
-                $sale->load(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount', 'payments.verifiedBy']),
+                $sale->fresh(['rep', 'user', 'shop', 'branch', 'dsrTrip', 'salesItems.item', 'payments.bankAccount', 'payments.verifiedBy']),
                 'Sale updated successfully',
                 200
             );
+        } catch (\Illuminate\Validation\ValidationException | \Illuminate\Database\Eloquent\ModelNotFoundException | \Symfony\Component\HttpKernel\Exception\HttpException $th) {
+            throw $th;
         } catch (Throwable $th) {
             return $this->errorResponse('Failed to update sale', 500, $th->getMessage());
         }
@@ -513,8 +552,9 @@ class SaleController extends Controller
     /**
      * Remove the specified sale.
      */
-    public function destroy($id)
+    public function destroy(Request $request, $id)
     {
+        abort_unless(in_array($request->user()->role, ['AGENT', 'SYSTEM_ADMIN']), 403);
         try {
             $sale = Sale::find($id);
 
@@ -522,9 +562,14 @@ class SaleController extends Controller
                 return $this->errorResponse('Sale not found', 404);
             }
 
+            if ($sale->status === 'COMPLETED') {
+                throw ValidationException::withMessages(['sale' => 'Cancel a completed sale before deleting it.']);
+            }
             $sale->delete();
 
             return $this->successResponse(null, 'Sale deleted successfully', 200);
+        } catch (\Illuminate\Validation\ValidationException | \Illuminate\Database\Eloquent\ModelNotFoundException | \Symfony\Component\HttpKernel\Exception\HttpException $th) {
+            throw $th;
         } catch (Throwable $th) {
             return $this->errorResponse('Failed to delete sale', 500, $th->getMessage());
         }

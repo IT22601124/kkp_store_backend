@@ -108,6 +108,8 @@ class BankTransferController extends Controller
                 'mime_type'     => $file->getClientMimeType(),
                 'size'          => $file->getSize(),
             ], 'Bank slip uploaded successfully', 201);
+        } catch (\Illuminate\Validation\ValidationException | \Symfony\Component\HttpKernel\Exception\HttpException $th) {
+            throw $th;
         } catch (Throwable $th) {
             return $this->errorResponse('Failed to upload bank slip: ' . $th->getMessage(), 500);
         }
@@ -118,165 +120,49 @@ class BankTransferController extends Controller
      */
     public function attachSlipToSale(Request $request, $saleId)
     {
-        try {
-            $sale = Sale::with(['payments.bankAccount', 'shop', 'rep'])->find($saleId);
-
-            if (!$sale) {
-                return $this->errorResponse('Sale not found', 404);
-            }
-
-            $request->validate([
-                'bank_account_id'  => 'nullable|integer|exists:bank_accounts,id',
-                'reference_number' => 'nullable|string|max:255',
-                'notes'            => 'nullable|string',
-                'payment_id'       => 'nullable|integer|exists:sale_payments,id',
-                'amount'           => 'nullable|numeric|min:0',
-            ]);
-
-            $slipPath = $this->resolveSlipPath($request);
-
-            if (!$slipPath) {
-                return $this->errorResponse('Please provide a bank slip image (file, base64, or pre-uploaded path)', 422);
-            }
-
-            DB::beginTransaction();
-
-            // Locate target payment
-            $targetPayment = null;
-            if ($request->filled('payment_id')) {
-                $targetPayment = $sale->payments->firstWhere('id', (int) $request->payment_id);
-            }
-
-            if (!$targetPayment) {
-                // Find payment with matching bank_account_id or bank transfer/online type
-                $targetPayment = $sale->payments->first(function ($p) use ($request) {
-                    if ($request->filled('bank_account_id') && (int) $p->bank_account_id === (int) $request->bank_account_id) {
-                        return true;
-                    }
-                    return in_array(strtoupper($p->payment_type), ['ONLINE', 'BANK_TRANSFER', 'TRANSFER']);
-                });
-            }
-
-            if (!$targetPayment) {
-                // Find any payment with empty slip or create a new one
-                $targetPayment = $sale->payments->first(fn($p) => empty($p->slip_image));
-            }
-
-            if ($targetPayment) {
-                $updateData = [
-                    'slip_image' => $slipPath,
-                    'status'     => 'PENDING',
-                ];
-
-                if ($request->filled('bank_account_id')) {
-                    $updateData['bank_account_id'] = $request->bank_account_id;
-                }
-
-                if ($request->filled('reference_number')) {
-                    $updateData['reference_number'] = $request->reference_number;
-                }
-
-                if ($request->filled('notes')) {
-                    $updateData['notes'] = $request->notes;
-                }
-
-                if (!in_array(strtoupper($targetPayment->payment_type), ['ONLINE', 'BANK_TRANSFER', 'TRANSFER'])) {
-                    $updateData['payment_type'] = 'BANK_TRANSFER';
-                }
-
-                $targetPayment->update($updateData);
-            } else {
-                // Create a new bank payment for the sale
-                $pAmount = (float) ($request->input('amount') ?? ($sale->due_amount > 0 ? $sale->due_amount : $sale->total_amount));
-                $targetPayment = SalePayment::create([
-                    'sale_id'          => $sale->id,
-                    'bank_account_id'  => $request->input('bank_account_id'),
-                    'payment_type'     => 'BANK_TRANSFER',
-                    'amount'           => $pAmount,
-                    'reference_number' => $request->input('reference_number'),
-                    'payment_date'     => now(),
-                    'slip_image'       => $slipPath,
-                    'status'           => 'PENDING',
-                    'notes'            => $request->input('notes'),
-                ]);
-
-                if (!empty($targetPayment->bank_account_id) && $pAmount > 0) {
-                    BankAccount::find($targetPayment->bank_account_id)?->increment('current_balance', $pAmount);
-                }
-            }
-
-            DB::commit();
-
-            return $this->successResponse([
-                'sale'    => $sale->fresh(['payments.bankAccount', 'payments.verifiedBy', 'shop', 'rep']),
-                'payment' => $targetPayment->fresh(['bankAccount', 'verifiedBy']),
-            ], 'Bank slip attached to sale successfully', 200);
-        } catch (Throwable $th) {
-            DB::rollBack();
-            return $this->errorResponse('Failed to attach bank slip: ' . $th->getMessage(), 500);
+        $sale = Sale::findOrFail($saleId);
+        abort_if($request->user()->role === 'DSR_REP' && (int) $sale->rep_id !== $request->user()->id, 404);
+        $request->validate(['payment_id' => 'nullable|integer']);
+        $query = $sale->payments()->whereIn('payment_type', ['ONLINE', 'BANK_TRANSFER', 'TRANSFER', 'CARD']);
+        if ($request->filled('payment_id')) $query->whereKey($request->integer('payment_id'));
+        $payment = $query->first();
+        if (!$payment) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['payment_id' => 'Record a bank payment when creating the sale before attaching its receipt.']);
         }
+        $payment = $this->savePaymentEvidence($request, $payment);
+        return $this->successResponse(['sale' => $sale->fresh(['payments.bankAccount', 'shop', 'rep']), 'payment' => $payment], 'Bank slip attached to sale successfully');
     }
 
-    /**
-     * Attach a bank slip directly to a specific payment record.
-     */
     public function attachSlipToPayment(Request $request, $paymentId)
     {
-        try {
-            $payment = SalePayment::with(['sale.shop', 'sale.rep', 'bankAccount'])->find($paymentId);
-
-            if (!$payment) {
-                return $this->errorResponse('Payment record not found', 404);
-            }
-
-            $request->validate([
-                'bank_account_id'  => 'nullable|integer|exists:bank_accounts,id',
-                'reference_number' => 'nullable|string|max:255',
-                'notes'            => 'nullable|string',
-            ]);
-
-            $slipPath = $this->resolveSlipPath($request);
-
-            if (!$slipPath) {
-                return $this->errorResponse('Please provide a bank slip image (file, base64, or pre-uploaded path)', 422);
-            }
-
-            $updateData = [
-                'slip_image' => $slipPath,
-                'status'     => 'PENDING',
-            ];
-
-            if ($request->filled('bank_account_id')) {
-                $updateData['bank_account_id'] = $request->bank_account_id;
-            }
-
-            if ($request->filled('reference_number')) {
-                $updateData['reference_number'] = $request->reference_number;
-            }
-
-            if ($request->filled('notes')) {
-                $updateData['notes'] = $request->notes;
-            }
-
-            if (!in_array(strtoupper($payment->payment_type), ['ONLINE', 'BANK_TRANSFER', 'TRANSFER'])) {
-                $updateData['payment_type'] = 'BANK_TRANSFER';
-            }
-
-            $payment->update($updateData);
-
-            return $this->successResponse(
-                $payment->fresh(['bankAccount', 'sale.shop', 'sale.rep', 'verifiedBy']),
-                'Bank slip attached to payment successfully',
-                200
-            );
-        } catch (Throwable $th) {
-            return $this->errorResponse('Failed to attach bank slip to payment: ' . $th->getMessage(), 500);
-        }
+        $payment = SalePayment::with('sale')->findOrFail($paymentId);
+        abort_if($request->user()->role === 'DSR_REP' && (int) $payment->sale?->rep_id !== $request->user()->id, 404);
+        return $this->successResponse($this->savePaymentEvidence($request, $payment), 'Bank slip attached to payment successfully');
     }
 
-    /**
-     * List bank transfer payments and slips for Agent / Web view.
-     */
+    private function savePaymentEvidence(Request $request, SalePayment $payment): SalePayment
+    {
+        $data = $request->validate(['bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
+            'reference_number' => 'nullable|string|max:255', 'notes' => 'nullable|string', 'amount' => 'nullable|numeric|min:0']);
+        return DB::transaction(function () use ($request, $payment, $data) {
+            $sale = Sale::whereKey($payment->sale_id)->lockForUpdate()->firstOrFail();
+            $payment = SalePayment::whereKey($payment->id)->lockForUpdate()->firstOrFail();
+            if ($sale->status === 'CANCELLED' || $payment->status === 'VERIFIED'
+                || !in_array($payment->payment_type, ['ONLINE', 'BANK_TRANSFER', 'TRANSFER', 'CARD'])) {
+                throw \Illuminate\Validation\ValidationException::withMessages(['payment' => 'Receipts can only be attached to unverified bank payments on active invoices.']);
+            }
+            if ((isset($data['bank_account_id']) && (int) $data['bank_account_id'] !== (int) $payment->bank_account_id)
+                || (isset($data['amount']) && round((float) $data['amount'], 2) !== round((float) $payment->amount, 2))) {
+                throw \Illuminate\Validation\ValidationException::withMessages(['payment' => 'Attaching a receipt cannot change the recorded account or amount.']);
+            }
+            $path = $this->resolveSlipPath($request);
+            if (!$path) throw \Illuminate\Validation\ValidationException::withMessages(['bank_slip' => 'Please provide a bank slip image.']);
+            $payment->update(['slip_image' => $path, 'reference_number' => $data['reference_number'] ?? $payment->reference_number,
+                'notes' => $data['notes'] ?? $payment->notes, 'status' => $payment->status === 'REJECTED' ? 'REJECTED' : 'PENDING']);
+            return $payment->load(['bankAccount', 'sale.shop', 'sale.rep', 'verifiedBy']);
+        }, 3);
+    }
+
     public function index(Request $request)
     {
         try {
@@ -418,50 +304,34 @@ class BankTransferController extends Controller
         }
     }
 
-    /**
-     * Verify or Reject a bank transfer slip (Agent/Web action).
-     */
     public function verify(Request $request, $id)
     {
-        try {
-            $payment = SalePayment::with(['bankAccount', 'sale'])->find($id);
-
-            if (!$payment) {
-                return $this->errorResponse('Bank transfer payment not found', 404);
+        abort_unless(in_array($request->user()->role, ['AGENT', 'SYSTEM_ADMIN']), 403);
+        $data = $request->validate(['status' => 'required|in:VERIFIED,REJECTED',
+            'rejection_reason' => 'nullable|string|max:500', 'notes' => 'nullable|string|max:2000']);
+        $payment = DB::transaction(function () use ($request, $id, $data) {
+            $payment = SalePayment::with('sale')->findOrFail($id);
+            if ($payment->sale?->rep_id) \App\Models\User::whereKey($payment->sale->rep_id)->lockForUpdate()->first();
+            if ($payment->sale?->shop_id) \App\Models\Shop::whereKey($payment->sale->shop_id)->lockForUpdate()->first();
+            $sale = Sale::whereKey($payment->sale_id)->lockForUpdate()->firstOrFail();
+            $payment = SalePayment::whereKey($id)->lockForUpdate()->firstOrFail();
+            if ($sale->status === 'CANCELLED') {
+                throw \Illuminate\Validation\ValidationException::withMessages(['sale' => 'A cancelled sale cannot receive verified payments.']);
             }
-
-            $validated = $request->validate([
-                'status'           => 'required|string|in:VERIFIED,REJECTED,PENDING,CONFIRMED',
-                'rejection_reason' => 'nullable|string|max:500',
-                'notes'            => 'nullable|string|max:500',
-            ]);
-
-            $newStatus = strtoupper($validated['status']);
-            $user = $request->user();
-
-            $payment->status = $newStatus;
-            $payment->verified_by = $user ? $user->id : null;
-            $payment->verified_at = now();
-
-            if ($newStatus === 'REJECTED') {
-                $payment->rejection_reason = $validated['rejection_reason'] ?? $validated['notes'] ?? 'Rejected by agent';
-            } elseif ($newStatus === 'VERIFIED') {
-                $payment->rejection_reason = null;
+            if ($payment->bank_account_id && (($payment->status === 'REJECTED') !== ($data['status'] === 'REJECTED'))) {
+                $sign = $data['status'] === 'REJECTED' ? -1 : 1;
+                BankAccount::whereKey($payment->bank_account_id)->lockForUpdate()->firstOrFail()->increment('current_balance', $sign * (float) $payment->amount);
             }
-
-            if (!empty($validated['notes'])) {
-                $payment->notes = $payment->notes ? ($payment->notes . ' | ' . $validated['notes']) : $validated['notes'];
-            }
-
-            $payment->save();
-
-            return $this->successResponse(
-                $payment->fresh(['bankAccount', 'sale.shop', 'sale.rep', 'verifiedBy:id,name,role']),
-                "Bank transfer slip marked as {$newStatus} successfully",
-                200
-            );
-        } catch (Throwable $th) {
-            return $this->errorResponse('Failed to update bank transfer verification: ' . $th->getMessage(), 500);
-        }
+            $oldDue = (float) $sale->due_amount;
+            $payment->update(['status' => $data['status'], 'verified_by' => $request->user()->id, 'verified_at' => now(),
+                'rejection_reason' => $data['status'] === 'REJECTED' ? ($data['rejection_reason'] ?? 'Rejected by agent') : null,
+                'notes' => $data['notes'] ?? $payment->notes]);
+            $paid = (float) $sale->payments()->where('payment_type', '!=', 'CREDIT')->where('status', '!=', 'REJECTED')->sum('amount');
+            $due = max(0, round((float) $sale->total_amount - $paid, 2));
+            $sale->update(['paid_amount' => min((float) $sale->total_amount, $paid), 'due_amount' => $due]);
+            if ($sale->shop_id) \App\Models\Shop::whereKey($sale->shop_id)->increment('current_credit_balance', $due - $oldDue);
+            return $payment->load(['bankAccount', 'sale.shop', 'sale.rep', 'verifiedBy:id,name,role']);
+        }, 3);
+        return $this->successResponse($payment, 'Payment verification saved');
     }
 }

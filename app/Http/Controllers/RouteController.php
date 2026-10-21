@@ -32,6 +32,9 @@ class RouteController extends Controller
     public function index(Request $request)
     {
         $query = Route::with(['branch', 'referrer'])->withCount('shops');
+        if ($request->user()->role === 'DSR_REP') {
+            $query->where('id', $request->user()->dsrProfile?->assigned_route_id ?? 0);
+        }
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->query('branch_id'));

@@ -3,86 +3,126 @@
 namespace App\Http\Controllers;
 
 use App\Models\SalaryPayroll;
+use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class PayrollController extends Controller
 {
-    private function formatPayroll(SalaryPayroll $p): array
+    public function settings(Request $request)
     {
-        return [
-            'id' => (int)$p->id,
-            'referrer_id' => (int)$p->referrer_id,
-            'referrerId' => (int)$p->referrer_id,
-            'pay_period' => $p->pay_period,
-            'payPeriod' => $p->pay_period,
-            'basic_salary' => (float)$p->basic_salary,
-            'basicSalary' => (float)$p->basic_salary,
-            'bike_allowance' => (float)$p->bike_allowance,
-            'bikeAllowance' => (float)$p->bike_allowance,
-            'fuel_allowance' => (float)$p->fuel_allowance,
-            'fuelAllowance' => (float)$p->fuel_allowance,
-            'earned_commission' => (float)$p->earned_commission,
-            'earnedCommission' => (float)$p->earned_commission,
-            'total_deductions' => (float)$p->total_deductions,
-            'totalDeductions' => (float)$p->total_deductions,
-            'net_payable' => (float)$p->net_payable,
-            'netPayable' => (float)$p->net_payable,
-            'payment_status' => $p->payment_status,
-            'paymentStatus' => $p->payment_status,
-            'created_at' => $p->created_at,
-            'updated_at' => $p->updated_at
-        ];
+        if ($request->isMethod('PUT')) {
+            $data = $request->validate(['itemRules' => 'required|array', 'itemRules.*.itemId' => 'required|integer|distinct|exists:items,id',
+                'itemRules.*.type' => 'required|in:PERCENTAGE,FIXED_PER_UNIT', 'itemRules.*.rateValue' => 'required|numeric|min:0',
+                'targetBonusAmount' => 'required|numeric|min:0']);
+            foreach ($data['itemRules'] as $rule) {
+                if ($rule['type'] === 'PERCENTAGE' && $rule['rateValue'] > 100) {
+                    throw ValidationException::withMessages(['itemRules' => 'Percentage rates cannot exceed 100.']);
+                }
+            }
+            DB::table('system_settings')->updateOrInsert(['key' => 'payroll_commission'], ['value' => json_encode($data), 'updated_at' => now(), 'created_at' => now()]);
+        }
+        $stored = DB::table('system_settings')->where('key', 'payroll_commission')->value('value');
+        return response()->json(['success' => true, 'data' => $stored ? json_decode($stored, true) : ['itemRules' => [], 'targetBonusAmount' => 0]]);
     }
 
     public function index()
     {
-        $list = SalaryPayroll::orderBy('id', 'desc')->get();
-        return response()->json(['success' => true, 'data' => $list->map(fn($p) => $this->formatPayroll($p))]);
+        return response()->json(['success' => true, 'data' => SalaryPayroll::latest('id')->get()]);
+    }
+
+    private function input(Request $request, ?SalaryPayroll $existing = null): array
+    {
+        $data = $request->validate([
+            'referrer_id' => ($existing ? 'sometimes' : 'required').'|integer|exists:users,id',
+            'pay_period' => ($existing ? 'sometimes' : 'required').'|date_format:Y-m',
+            'basic_salary' => 'sometimes|numeric|min:0', 'bike_allowance' => 'sometimes|numeric|min:0',
+            'fuel_allowance' => 'sometimes|numeric|min:0', 'earned_commission' => 'sometimes|numeric|min:0',
+            'fuel_advances' => 'sometimes|numeric|min:0', 'epf_etf_deduction' => 'sometimes|numeric|min:0',
+            'total_deductions' => 'sometimes|numeric|min:0', 'commission_breakdown' => 'nullable|array',
+            'commission_breakdown.*' => 'numeric|min:0', 'payment_status' => 'sometimes|in:DRAFT,APPROVED,DISBURSED',
+        ]);
+        $values = array_merge($existing?->toArray() ?? [], $data);
+        foreach (['basic_salary', 'bike_allowance', 'fuel_allowance', 'earned_commission', 'fuel_advances', 'epf_etf_deduction'] as $key) {
+            $values[$key] = round((float) ($values[$key] ?? 0), 2);
+        }
+        if (array_key_exists('fuel_advances', $data) || array_key_exists('epf_etf_deduction', $data) || !$existing) {
+            $values['total_deductions'] = $values['fuel_advances'] + $values['epf_etf_deduction'];
+        }
+        $values['net_payable'] = round($values['basic_salary'] + $values['bike_allowance'] + $values['fuel_allowance']
+            + $values['earned_commission'] - (float) ($values['total_deductions'] ?? 0), 2);
+        if ($values['net_payable'] < 0) {
+            throw ValidationException::withMessages(['total_deductions' => 'Deductions exceed earnings.']);
+        }
+        if (User::findOrFail($values['referrer_id'])->role !== 'DSR_REP') {
+            throw ValidationException::withMessages(['referrer_id' => 'Select a sales representative.']);
+        }
+
+        return array_intersect_key($values, array_flip((new SalaryPayroll)->getFillable()));
     }
 
     public function store(Request $request)
     {
-        $basic = $request->input('basic_salary') ?? $request->input('basicSalary') ?? 45000;
-        $bike = $request->input('bike_allowance') ?? $request->input('bikeAllowance') ?? 15000;
-        $fuel = $request->input('fuel_allowance') ?? $request->input('fuelAllowance') ?? 10000;
-        $commission = $request->input('earned_commission') ?? $request->input('earnedCommission') ?? 0;
-        $deductions = $request->input('total_deductions') ?? $request->input('totalDeductions') ?? 0;
-        $net = ($basic + $bike + $fuel + $commission) - $deductions;
+        $data = $this->input($request);
+        $data['payment_status'] = 'DRAFT';
+        $payroll = DB::transaction(function () use ($data) {
+            User::whereKey($data['referrer_id'])->lockForUpdate()->firstOrFail();
+            if (SalaryPayroll::where('referrer_id', $data['referrer_id'])->where('pay_period', $data['pay_period'])->exists()) {
+                throw ValidationException::withMessages(['pay_period' => 'A payroll already exists for this representative and period.']);
+            }
+            return SalaryPayroll::create($data);
+        });
 
-        $p = SalaryPayroll::create([
-            'referrer_id' => $request->input('referrer_id') ?? $request->input('referrerId') ?? 1,
-            'pay_period' => $request->input('pay_period') ?? $request->input('payPeriod') ?? date('Y-m'),
-            'basic_salary' => $basic,
-            'bike_allowance' => $bike,
-            'fuel_allowance' => $fuel,
-            'earned_commission' => $commission,
-            'total_deductions' => $deductions,
-            'net_payable' => $net,
-            'payment_status' => $request->input('payment_status') ?? 'DRAFT'
-        ]);
-
-        return response()->json(['success' => true, 'message' => 'Payroll created', 'data' => $this->formatPayroll($p)], 201);
+        return response()->json(['success' => true, 'data' => $payroll], 201);
     }
 
-    public function show($id)
+    public function show(int $id)
     {
-        $p = SalaryPayroll::find($id);
-        if (!$p) return response()->json(['success' => false, 'message' => 'Payroll not found'], 404);
-        return response()->json(['success' => true, 'data' => $this->formatPayroll($p)]);
+        return response()->json(['success' => true, 'data' => SalaryPayroll::findOrFail($id)]);
     }
 
-    public function update(Request $request, $id)
+    public function update(Request $request, int $id)
     {
-        $p = SalaryPayroll::find($id);
-        if (!$p) return response()->json(['success' => false, 'message' => 'Payroll not found'], 404);
-        $p->update($request->all());
-        return response()->json(['success' => true, 'message' => 'Payroll updated', 'data' => $this->formatPayroll($p)]);
+        $payroll = DB::transaction(function () use ($request, $id) {
+            $payroll = SalaryPayroll::whereKey($id)->lockForUpdate()->firstOrFail();
+            $data = $this->input($request, $payroll);
+            if ((int) $data['referrer_id'] !== (int) $payroll->referrer_id || $data['pay_period'] !== $payroll->pay_period) {
+                throw ValidationException::withMessages(['pay_period' => 'Create a separate draft for a different representative or pay period.']);
+            }
+            $status = $data['payment_status'] ?? $payroll->payment_status;
+            if ($payroll->payment_status === 'DISBURSED') {
+                if ($status !== 'DISBURSED' || count($request->except('payment_status')) > 0) {
+                    throw ValidationException::withMessages(['payment_status' => 'Disbursed payrolls cannot be edited.']);
+                }
+                return $payroll;
+            }
+            if ($status !== $payroll->payment_status && !in_array($payroll->payment_status.':'.$status, ['DRAFT:APPROVED', 'APPROVED:DISBURSED'])) {
+                throw ValidationException::withMessages(['payment_status' => 'Approve a draft before disbursing it.']);
+            }
+            if ($payroll->payment_status === 'APPROVED' && count($request->except('payment_status')) > 0) {
+                throw ValidationException::withMessages(['payroll' => 'Approved payroll amounts cannot be edited.']);
+            }
+            if ($status === 'DISBURSED') {
+                $data['payment_date'] = now()->toDateString();
+            }
+            $payroll->update($data);
+            return $payroll;
+        });
+
+        return response()->json(['success' => true, 'data' => $payroll]);
     }
 
-    public function destroy($id)
+    public function destroy(int $id)
     {
-        $p = SalaryPayroll::find($id);
-        if ($p) $p->delete();
-        return response()->json(['success' => true, 'message' => 'Payroll deleted']);
+        DB::transaction(function () use ($id) {
+            $payroll = SalaryPayroll::whereKey($id)->lockForUpdate()->firstOrFail();
+            if ($payroll->payment_status !== 'DRAFT') {
+                throw ValidationException::withMessages(['payroll' => 'Only draft payrolls can be deleted.']);
+            }
+            $payroll->delete();
+        });
+
+        return response()->json(['success' => true]);
     }
 }

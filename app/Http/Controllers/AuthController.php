@@ -39,11 +39,7 @@ class AuthController extends Controller
             })->first();
 
             // 3. Check user existence and password
-            $passwordValid = $user && (
-                Hash::check($request->password, $user->password) ||
-                ($request->password === 'password123' && Hash::check('password', $user->password)) ||
-                ($request->password === 'password' && Hash::check('password123', $user->password))
-            );
+            $passwordValid = $user && Hash::check($request->password, $user->password);
 
             if (!$user || !$passwordValid) {
                 return $this->errorResponse(
@@ -58,6 +54,10 @@ class AuthController extends Controller
                     'Access denied. Only agent accounts are allowed to log into this system.',
                     403
                 );
+            }
+
+            if (strtoupper($user->status) !== 'ACTIVE') {
+                return $this->errorResponse('Your account is inactive', 403);
             }
 
             // 4. Create authentication token
@@ -78,6 +78,8 @@ class AuthController extends Controller
                 200
             );
 
+        } catch (\Illuminate\Validation\ValidationException $th) {
+            throw $th;
         } catch (Throwable $th) {
             Log::info($th->getMessage());
             return $this->errorResponse(
@@ -86,6 +88,12 @@ class AuthController extends Controller
                 $th->getMessage()
             );
         }
+    }
+
+    public function logout(Request $request)
+    {
+        $request->user()->currentAccessToken()?->delete();
+        return response()->json(['success' => true, 'message' => 'Logged out successfully']);
     }
 
     /**
@@ -119,6 +127,8 @@ class AuthController extends Controller
                 'Token is valid',
                 200
             );
+        } catch (\Illuminate\Validation\ValidationException $th) {
+            throw $th;
         } catch (Throwable $th) {
             return $this->errorResponse(
                 'Invalid or expired token',

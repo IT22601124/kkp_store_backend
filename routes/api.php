@@ -50,7 +50,8 @@ Route::get('/v1/mobile/bank-accounts/active', [BankAccountController::class, 'ge
 Route::get('/v1/bank-accounts/active', [BankAccountController::class, 'getActiveAccounts']);
 
 // Authenticated Routes
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware(['auth:sanctum', \App\Http\Middleware\ActiveApiUser::class])->group(function () {
+    Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/notification-broadcasts', [NotificationBroadcastController::class, 'index']);
     Route::post('/notification-broadcasts', [NotificationBroadcastController::class, 'store'])->middleware('throttle:6,1');
     Route::get('/v1/mobile/notifications', [MobileNotificationController::class, 'index']);
@@ -92,11 +93,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/v1/mobile/shops', [MobileShopController::class, 'index']);
     Route::post('/v1/mobile/shops', [MobileShopController::class, 'store']);
     Route::get('/v1/mobile/shops/{id}', [MobileShopController::class, 'show']);
+    Route::match(['put', 'patch'], '/v1/mobile/shops/{id}', [MobileShopController::class, 'update']);
     Route::delete('/v1/mobile/shops/{id}', [MobileShopController::class, 'destroy']);
 
     Route::get('/v1/shops', [MobileShopController::class, 'index']);
     Route::post('/v1/shops', [MobileShopController::class, 'store']);
     Route::get('/v1/shops/{id}', [MobileShopController::class, 'show']);
+    Route::match(['put', 'patch'], '/v1/shops/{id}', [MobileShopController::class, 'update']);
     Route::delete('/v1/shops/{id}', [MobileShopController::class, 'destroy']);
 
     Route::apiResource('shops', ShopController::class);
@@ -110,6 +113,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Operational Resources
     Route::apiResource('dsr-trips', DsrTripController::class);
     Route::apiResource('targets', TargetController::class);
+    Route::match(['get', 'put'], '/payroll-settings', [PayrollController::class, 'settings']);
     Route::apiResource('payroll', PayrollController::class);
 
     // Agent Bank Account Management Routes
@@ -119,6 +123,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::match(['patch', 'post'], '/v1/bank-accounts/{id}/toggle-status', [BankAccountController::class, 'toggleStatus']);
     Route::match(['patch', 'post'], '/bank-accounts/{id}/set-default', [BankAccountController::class, 'setDefault']);
     Route::match(['patch', 'post'], '/v1/bank-accounts/{id}/set-default', [BankAccountController::class, 'setDefault']);
+    foreach (['/bank-deposits', '/v1/bank-deposits'] as $depositPrefix) {
+        Route::get($depositPrefix, [\App\Http\Controllers\BankLedgerController::class, 'deposits']);
+        Route::post($depositPrefix.'/{id}/status', [\App\Http\Controllers\BankLedgerController::class, 'verifyDeposit']);
+    }
+    Route::get('/v1/fund-transfers', [\App\Http\Controllers\BankLedgerController::class, 'transfers']);
+    Route::post('/v1/fund-transfers', [\App\Http\Controllers\BankLedgerController::class, 'transfer']);
     Route::post('/bank-deposits', [BankAccountController::class, 'recordDeposit']);
     Route::post('/v1/bank-deposits', [BankAccountController::class, 'recordDeposit']);
     Route::apiResource('bank-accounts', BankAccountController::class);

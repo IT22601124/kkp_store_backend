@@ -11,6 +11,10 @@ class DailySettlement extends Model
 
     protected $fillable = [
         'settlement_code',
+        'cash_counted',
+        'total_credit_collected',
+        'audited_by',
+        'audited_at',
         'rep_id',
         'dsr_trip_id',
         'settlement_date',

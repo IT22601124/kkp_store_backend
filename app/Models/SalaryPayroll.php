@@ -20,8 +20,11 @@ class SalaryPayroll extends Model
         'earned_commission',
         'total_deductions',
         'net_payable',
+        'fuel_advances', 'epf_etf_deduction', 'commission_breakdown', 'payment_date',
         'payment_status'
     ];
+
+    protected $casts = ['commission_breakdown' => 'array', 'payment_date' => 'date'];
 
     public function referrer()
     {

@@ -13,7 +13,7 @@ use Tests\TestCase;
 
 class BankAccountTest extends TestCase
 {
-    use RefreshDatabase;
+    use RefreshDatabase, \Tests\Support\IssuedRepStock;
 
     public function test_seeder_creates_4_agent_bank_accounts(): void
     {
@@ -212,6 +212,8 @@ class BankAccountTest extends TestCase
             'selling_price' => 200.00,
             'status' => 'ACTIVE',
         ]);
+
+        $this->seedIssuedStock($rep, $item);
 
         $response = $this->postJson('/api/v1/sales', [
             'payment_type' => 'ONLINE',
