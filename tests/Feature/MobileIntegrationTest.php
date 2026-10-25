@@ -145,6 +145,67 @@ class MobileIntegrationTest extends TestCase
         $this->postJson('/api/bank-deposits', [])->assertForbidden();
     }
 
+    public function test_settlement_history_requires_authentication(): void
+    {
+        $this->getJson('/api/v1/mobile/daily-settlement/history')->assertUnauthorized();
+    }
+
+    public function test_live_settlement_refreshes_submitted_totals_but_preserves_approved_snapshot(): void
+    {
+        $data = $this->fixture();
+        $url = '/api/v1/mobile/daily-settlement';
+        $date = now()->toDateString();
+        $this->postJson('/api/v1/mobile/sales', $this->payload($data))->assertCreated();
+        $this->postJson($url, ['date' => $date])->assertCreated()
+            ->assertJsonPath('data.total_sales_value', '200.00');
+        $this->postJson('/api/v1/mobile/sales', $this->payload($data, ['payment_type' => 'CREDIT']))->assertCreated();
+
+        $this->getJson($url.'?date='.$date)->assertOk()->assertJsonPath('data.total_sales_value', 200);
+        $this->getJson($url.'?live=true&date='.$date)->assertOk()
+            ->assertJsonPath('data.total_sales_value', 400)->assertJsonPath('data.total_cash_collected', 200)
+            ->assertJsonPath('data.total_credit_issued', 200)->assertJsonPath('data.ending_shop_credit', 200)
+            ->assertJsonPath('data.items_matrix.0.sold_qty', 4)->assertJsonPath('data.items_matrix.0.total_revenue', 400)
+            ->assertJsonPath('data.status', 'SUBMITTED')->assertJsonPath('data.is_saved', false);
+        $this->assertEquals(200, DailySettlement::first()->total_sales_value);
+
+        DailySettlement::first()->update(['status' => 'APPROVED']);
+        $this->getJson($url.'?live=true&date='.$date)->assertOk()
+            ->assertJsonPath('data.total_sales_value', 200)->assertJsonPath('data.status', 'APPROVED')
+            ->assertJsonPath('data.is_saved', true);
+    }
+
+    public function test_settlement_history_is_scoped_to_authenticated_rep_and_sorted_newest_first(): void
+    {
+        $data = $this->fixture();
+        $url = '/api/v1/mobile/daily-settlement/history';
+        $this->getJson($url)->assertOk()->assertJsonPath('success', true)->assertJsonPath('data', []);
+
+        $older = DailySettlement::create(['settlement_code' => 'OLD', 'rep_id' => $data['rep']->id,
+            'settlement_date' => '2026-10-19', 'status' => 'APPROVED']);
+        $newer = DailySettlement::create(['settlement_code' => 'NEW', 'rep_id' => $data['rep']->id,
+            'settlement_date' => '2026-10-20', 'status' => 'SUBMITTED', 'total_cash_collected' => 125.50,
+            'total_cheques_collected' => 20, 'total_online_collected' => 30, 'total_credit_issued' => 40]);
+        $other = User::factory()->create(['role' => 'DSR_REP']);
+        DailySettlement::create(['settlement_code' => 'FOREIGN', 'rep_id' => $other->id,
+            'settlement_date' => '2026-10-21']);
+
+        $this->getJson($url.'?rep_id='.$other->id)->assertOk()->assertJsonCount(2, 'data')
+            ->assertJsonPath('data.0.id', $newer->id)->assertJsonPath('data.1.id', $older->id)
+            ->assertJsonPath('data.0.date', '2026-10-20')->assertJsonPath('data.0.cash_collected', 125.5)
+            ->assertJsonPath('data.0.cheque_collected', 20)->assertJsonPath('data.0.online_collected', 30)
+            ->assertJsonPath('data.0.credit_issued', 40)
+            ->assertJsonPath('data.0.items', [])->assertJsonPath('data.0.bank_deposits', []);
+        $this->getJson($url.'?start_date=2026-10-20&end_date=2026-10-20')->assertOk()
+            ->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $newer->id);
+        $this->getJson($url.'?status=APPROVED&date=2026-10-19')->assertOk()
+            ->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $older->id);
+        $this->getJson($url.'?date=invalid')->assertUnprocessable()->assertJsonValidationErrors('date');
+        $this->getJson($url.'?status=INVALID')->assertUnprocessable()->assertJsonValidationErrors('status');
+
+        $data['rep']->update(['status' => 'INACTIVE']);
+        $this->getJson($url)->assertForbidden();
+    }
+
     public function test_retrying_settlement_deposits_does_not_duplicate_bank_balance(): void
     {
         $data = $this->fixture();

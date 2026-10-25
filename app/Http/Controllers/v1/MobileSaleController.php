@@ -184,13 +184,14 @@ class MobileSaleController extends Controller
             $date = $request->query('date', now()->format('Y-m-d'));
 
             // Check if settlement sheet is already submitted & stored in database for this date and rep
-            if ($repId && !$request->boolean('live')) {
+            $savedSettlement = null;
+            if ($repId) {
                 $savedSettlement = DailySettlement::with(['items', 'rep', 'dsrTrip', 'bankDeposits.bankAccount'])
                     ->where('rep_id', $repId)
                     ->whereDate('settlement_date', $date)
                     ->first();
 
-                if ($savedSettlement) {
+                if ($savedSettlement && (!$request->boolean('live') || $savedSettlement->status === 'APPROVED')) {
                     $itemsMatrix = $savedSettlement->items->map(function ($it) {
                         return [
                             'item_id' => $it->item_id,
@@ -224,7 +225,14 @@ class MobileSaleController extends Controller
                 }
             }
 
-            return $this->successResponse(app(\App\Services\SettlementSummary::class)->forRep((int) $repId, $date), 'Live daily settlement preview retrieved successfully');
+            $summary = app(\App\Services\SettlementSummary::class)->forRep((int) $repId, $date);
+            if ($savedSettlement) {
+                $summary['status'] = $savedSettlement->status;
+                $summary['id'] = $savedSettlement->id;
+                $summary['submitted_at'] = $savedSettlement->submitted_at?->toIso8601String();
+            }
+
+            return $this->successResponse($summary, 'Live daily settlement preview retrieved successfully');
         } catch (\Illuminate\Validation\ValidationException | \Illuminate\Database\Eloquent\ModelNotFoundException | \Symfony\Component\HttpKernel\Exception\HttpException $th) {
             throw $th;
         } catch (Throwable $th) {
@@ -390,6 +398,47 @@ class MobileSaleController extends Controller
         } catch (Throwable $th) {
             return $this->errorResponse('Failed to store daily settlement sheet: ' . $th->getMessage(), 500);
         }
+    }
+
+    /** List stored settlement sheets belonging to the authenticated rep. */
+    public function getDailySettlementHistory(Request $request)
+    {
+        $filters = $request->validate([
+            'date' => 'nullable|date_format:Y-m-d',
+            'start_date' => 'nullable|date_format:Y-m-d',
+            'end_date' => 'nullable|date_format:Y-m-d',
+            'status' => 'nullable|string|in:SUBMITTED,APPROVED,REJECTED,PENDING',
+        ]);
+
+        $query = DailySettlement::with(['items.item', 'dsrTrip', 'bankDeposits.bankAccount'])
+            ->where('rep_id', $request->user()->id);
+
+        if (!empty($filters['date'])) {
+            $query->whereDate('settlement_date', $filters['date']);
+        }
+        if (!empty($filters['start_date'])) {
+            $query->whereDate('settlement_date', '>=', $filters['start_date']);
+        }
+        if (!empty($filters['end_date'])) {
+            $query->whereDate('settlement_date', '<=', $filters['end_date']);
+        }
+        if (!empty($filters['status'])) {
+            $query->where('status', $filters['status']);
+        }
+
+        $settlements = $query->orderBy('settlement_date', 'desc')->orderBy('id', 'desc')->get()
+            ->map(function (DailySettlement $settlement) {
+                // Field names consumed by the mobile settlement history screen.
+                $settlement->setAttribute('date', $settlement->settlement_date->format('Y-m-d'));
+                $settlement->setAttribute('cash_collected', (float) $settlement->total_cash_collected);
+                $settlement->setAttribute('cheque_collected', (float) $settlement->total_cheques_collected);
+                $settlement->setAttribute('online_collected', (float) $settlement->total_online_collected);
+                $settlement->setAttribute('credit_issued', (float) $settlement->total_credit_issued);
+
+                return $settlement;
+            });
+
+        return $this->successResponse($settlements, 'Daily settlement history retrieved successfully');
     }
 
     /** List all daily settlement sheets for admin/supervisor audit. */

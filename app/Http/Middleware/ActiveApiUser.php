@@ -27,7 +27,7 @@ class ActiveApiUser
                 'v1\\UserShopController' => ['getShopsByCreatedBy'],
                 'ShopController' => ['index', 'show', 'store', 'update', 'destroy', 'settleCredit'],
                 'SaleController' => ['index', 'show', 'store'],
-                'v1\\MobileSaleController' => ['index', 'show', 'store', 'getTodaySales', 'getShopCreditSales', 'getDailySettlementSheet', 'storeDailySettlementSheet'],
+                'v1\\MobileSaleController' => ['index', 'show', 'store', 'getTodaySales', 'getShopCreditSales', 'getDailySettlementSheet', 'getDailySettlementHistory', 'storeDailySettlementSheet'],
                 'StockRequestController' => ['index', 'show', 'store'],
                 'RepStockController' => ['index', 'show', 'getByRep'],
                 'StockController' => ['fetchStockByBranch'],

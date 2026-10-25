@@ -179,6 +179,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\ActiveApiUser::class])->
     Route::apiResource('grn', GrnController::class);
 
     // Sales & Sales Items Routes
+    Route::get('/v1/mobile/daily-settlement/history', [MobileSaleController::class, 'getDailySettlementHistory']);
     Route::get('/v1/mobile/daily-settlement', [MobileSaleController::class, 'getDailySettlementSheet']);
     Route::post('/v1/mobile/daily-settlement', [MobileSaleController::class, 'storeDailySettlementSheet']);
     Route::get('/v1/daily-settlement', [MobileSaleController::class, 'getDailySettlementSheet']);
