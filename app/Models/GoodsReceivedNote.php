@@ -16,9 +16,15 @@ class GoodsReceivedNote extends Model
         'received_date',
         'received_by',
         'total_value',
+        'payment_method',
+        'bank_account_id',
+        'request_key',
+        'request_hash',
         'status',
         'notes'
     ];
+
+    protected $hidden = ['request_key', 'request_hash'];
 
     public function branch()
     {
@@ -28,5 +34,10 @@ class GoodsReceivedNote extends Model
     public function items()
     {
         return $this->hasMany(GrnItem::class, 'goods_received_note_id');
+    }
+
+    public function bankAccount()
+    {
+        return $this->belongsTo(BankAccount::class);
     }
 }

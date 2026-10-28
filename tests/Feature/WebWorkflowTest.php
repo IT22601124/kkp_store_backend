@@ -154,6 +154,150 @@ class WebWorkflowTest extends TestCase
         $this->assertEquals(0, Stock::first()->quantity);
     }
 
+    public function test_grn_payment_methods_and_bank_selection_persist(): void
+    {
+        $data = $this->fixture();
+        $account = $this->account('GRN-BANK', 1000);
+        $payload = ['branch_id' => $data['branch']->id, 'supplier_invoice_no' => 'PAYMENT-INV',
+            'items' => [['item_id' => $data['item']->id, 'quantity_received' => 2, 'unit_price' => 50]]];
+
+        foreach (['CASH', 'BANK', 'CHEQUE', 'CREDIT'] as $method) {
+            $payment = ['payment_method' => $method, 'bank_account_id' => in_array($method, ['BANK', 'CHEQUE']) ? $account->id : null];
+            $response = $this->postJson('/api/grn', $payload + $payment)->assertCreated()
+                ->assertJsonPath('data.payment_method', $method)
+                ->assertJsonPath('data.bank_account_id', $payment['bank_account_id']);
+            $id = $response->json('data.id');
+            $this->assertDatabaseHas('goods_received_notes', ['id' => $id] + $payment);
+            $this->getJson('/api/grn/'.$id)->assertOk()->assertJsonPath('data.payment_method', $method);
+            if (in_array($method, ['BANK', 'CHEQUE'])) {
+                $response->assertJsonPath('data.bank_account.bank_name', 'Bank');
+                $this->deleteJson('/api/v1/bank-accounts/'.$account->id)->assertUnprocessable();
+                $account->update(['is_active' => false]);
+                $this->putJson('/api/grn/'.$id, ['notes' => 'Retain existing account'])->assertOk()
+                    ->assertJsonPath('data.bank_account_id', $account->id);
+                $this->putJson('/api/grn/'.$id, ['payment_method' => 'CREDIT'])->assertOk()
+                    ->assertJsonPath('data.bank_account_id', null);
+                $account->update(['is_active' => true]);
+            }
+        }
+
+        $account->update(['is_active' => true]);
+        $this->putJson('/api/grn/'.$id, ['payment_method' => 'BANK'])->assertUnprocessable()
+            ->assertJsonValidationErrors('bank_account_id');
+        $this->putJson('/api/grn/'.$id, ['payment_method' => 'BANK', 'bank_account_id' => $account->id])
+            ->assertOk()->assertJsonPath('data.bank_account_id', $account->id);
+        $this->getJson('/api/grn')->assertOk()->assertJsonPath('data.0.bank_account.id', $account->id);
+        $this->assertEquals(900, $account->fresh()->current_balance);
+        $this->getJson('/api/v1/bank-accounts-summary')->assertOk()->assertJsonPath('data.grn_cash_payments', 100);
+        $this->assertEquals(8, Stock::sum('quantity'));
+    }
+
+    public function test_grn_rejects_invalid_payment_details_before_recording_stock(): void
+    {
+        $data = $this->fixture();
+        $account = $this->account('INACTIVE-GRN');
+        $account->update(['is_active' => false]);
+        $payload = ['branch_id' => $data['branch']->id, 'supplier_invoice_no' => 'INVALID-INV',
+            'items' => [['item_id' => $data['item']->id, 'quantity_received' => 2, 'unit_price' => 50]]];
+        foreach ([
+            ['payment_method' => 'INVALID'],
+            ['payment_method' => 'BANK'],
+            ['payment_method' => 'CHEQUE'],
+            ['payment_method' => 'BANK', 'bank_account_id' => 999999],
+            ['payment_method' => 'BANK', 'bank_account_id' => $account->id],
+            ['payment_method' => 'CASH', 'bank_account_id' => $account->id],
+        ] as $payment) {
+            $this->postJson('/api/grn', $payload + $payment)->assertUnprocessable();
+        }
+        $this->assertDatabaseCount('goods_received_notes', 0);
+        $this->assertDatabaseCount('stocks', 0);
+    }
+
+    public function test_grn_bank_deductions_follow_amount_account_and_method_changes(): void
+    {
+        $data = $this->fixture();
+        $commercial = $this->account('COMMERCIAL', 1000);
+        $other = $this->account('OTHER', 500);
+        $payload = ['branch_id' => $data['branch']->id, 'supplier_invoice_no' => 'COMMERCIAL-GRN',
+            'payment_method' => 'BANK', 'bank_account_id' => $commercial->id,
+            'items' => [['item_id' => $data['item']->id, 'quantity_received' => 2, 'unit_price' => 50.25, 'batch_number' => 'PAY-BATCH']]];
+        $id = $this->postJson('/api/grn', $payload)->assertCreated()->json('data.id');
+        $this->assertEquals(899.50, $commercial->fresh()->current_balance);
+        $this->putJson('/api/grn/'.$id, ['notes' => 'No second charge'])->assertOk();
+        $this->assertEquals(899.50, $commercial->fresh()->current_balance);
+        $payload['items'][0]['quantity_received'] = 3;
+        $this->putJson('/api/grn/'.$id, ['items' => $payload['items']])->assertOk();
+        $this->assertEquals(849.25, $commercial->fresh()->current_balance);
+        $this->putJson('/api/grn/'.$id, ['bank_account_id' => $other->id, 'payment_method' => 'CHEQUE'])->assertOk();
+        $this->assertEquals(1000, $commercial->fresh()->current_balance);
+        $this->assertEquals(349.25, $other->fresh()->current_balance);
+        $this->putJson('/api/grn/'.$id, ['payment_method' => 'CASH'])->assertOk();
+        $this->assertEquals(500, $other->fresh()->current_balance);
+        $this->getJson('/api/v1/bank-accounts-summary')->assertOk()->assertJsonPath('data.grn_cash_payments', 150.75);
+        $this->putJson('/api/grn/'.$id, ['payment_method' => 'CREDIT'])->assertOk();
+        $this->getJson('/api/v1/bank-accounts-summary')->assertOk()->assertJsonPath('data.grn_cash_payments', 0);
+        $this->putJson('/api/grn/'.$id, ['payment_method' => 'BANK', 'bank_account_id' => $commercial->id])->assertOk();
+        $this->deleteJson('/api/grn/'.$id)->assertOk();
+        $this->assertEquals(1000, $commercial->fresh()->current_balance);
+        $this->assertDatabaseCount('grn_payment_postings', 0);
+    }
+
+    public function test_grn_payment_failures_roll_back_stock_and_bank_changes(): void
+    {
+        $data = $this->fixture();
+        $account = $this->account('FUNDED', 100);
+        $poor = $this->account('INSUFFICIENT', 25);
+        $payload = ['branch_id' => $data['branch']->id, 'supplier_invoice_no' => 'FUNDED-GRN',
+            'payment_method' => 'CHEQUE', 'bank_account_id' => $poor->id,
+            'items' => [['item_id' => $data['item']->id, 'quantity_received' => 2, 'unit_price' => 50, 'batch_number' => 'FUNDED']]];
+        $this->postJson('/api/grn', $payload)->assertUnprocessable()->assertJsonValidationErrors('bank_account_id');
+        $this->assertDatabaseCount('stocks', 0);
+        $this->assertDatabaseCount('goods_received_notes', 0);
+        $this->assertDatabaseCount('grn_payment_postings', 0);
+        $payload['bank_account_id'] = $account->id;
+        $id = $this->postJson('/api/grn', $payload)->assertCreated()->json('data.id');
+        $this->assertEquals(0, $account->fresh()->current_balance);
+        $this->putJson('/api/grn/'.$id, ['bank_account_id' => $poor->id])->assertUnprocessable();
+        $this->assertEquals(0, $account->fresh()->current_balance);
+        $this->assertEquals(25, $poor->fresh()->current_balance);
+        $payload['items'][0]['quantity_received'] = 3;
+        $this->putJson('/api/grn/'.$id, ['items' => $payload['items']])->assertUnprocessable();
+        $this->assertEquals(2, Stock::sum('quantity'));
+        $this->assertEquals(100, GoodsReceivedNote::findOrFail($id)->total_value);
+        Stock::first()->update(['quantity' => 1]);
+        $this->deleteJson('/api/grn/'.$id)->assertUnprocessable();
+        $this->assertEquals(0, $account->fresh()->current_balance);
+        $this->assertDatabaseCount('grn_payment_postings', 1);
+    }
+
+    public function test_grn_payment_retries_do_not_duplicate_stock_or_bank_deductions(): void
+    {
+        $data = $this->fixture();
+        $account = $this->account('RETRY', 500);
+        $payload = ['request_key' => (string) Str::uuid(), 'branch_id' => $data['branch']->id,
+            'supplier_invoice_no' => 'RETRY-GRN', 'payment_method' => 'BANK', 'bank_account_id' => $account->id,
+            'items' => [['item_id' => $data['item']->id, 'quantity_received' => 2, 'unit_price' => 50]]];
+        $id = $this->postJson('/api/grn', $payload)->assertCreated()->json('data.id');
+        $this->postJson('/api/grn', $payload)->assertCreated()->assertJsonPath('data.id', $id);
+        $this->assertEquals(400, $account->fresh()->current_balance);
+        $this->assertEquals(2, Stock::sum('quantity'));
+        $this->assertDatabaseCount('goods_received_notes', 1);
+        $this->assertDatabaseCount('grn_payment_postings', 1);
+        $payload['supplier_invoice_no'] = 'DIFFERENT';
+        $this->postJson('/api/grn', $payload)->assertUnprocessable()->assertJsonValidationErrors('request_key');
+    }
+
+    public function test_legacy_grn_deletion_does_not_refund_an_unposted_payment(): void
+    {
+        $data = $this->fixture();
+        $account = $this->account('LEGACY', 500);
+        $grn = GoodsReceivedNote::create(['grn_number' => 'LEGACY', 'branch_id' => $data['branch']->id,
+            'supplier_invoice_no' => 'OLD', 'received_date' => now(), 'received_by' => 'Officer',
+            'payment_method' => 'BANK', 'bank_account_id' => $account->id, 'total_value' => 100, 'status' => 'VERIFIED']);
+        $this->deleteJson('/api/grn/'.$grn->id)->assertOk();
+        $this->assertEquals(500, $account->fresh()->current_balance);
+    }
+
     public function test_rep_damage_adjustment_and_return_use_the_mobile_stock_store(): void
     {
         $data = $this->fixture();

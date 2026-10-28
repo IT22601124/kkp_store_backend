@@ -59,6 +59,73 @@ async function run(){
  await call('Page.reload');await until(async()=>(await text()).includes('Overview'),'restored session');await click('Cash Balance Sheet');await until(()=>evalJs("document.querySelector('section textarea')?.value==='Browser reconciliation'"),'persisted sheet after reload');
  checks.push('Browser cash sheet shows mobile sales and survives a full reload');console.log(checks.at(-1));
  for(const label of ['Branch Hubs','Sales Reps (DSR)','Item Pricing & Margins','Stock Issuance','Daily DSR Audit','Goods Received (GRN)','Route Master','Shops & Credit','Monthly Targets','Payroll & Salaries','Reports & Export']){await click(label);await pause(450);assert((await text()).length>100,label+' renders');}
+ await click('Goods Received (GRN)');
+ const select=async(selector,value)=>{assert(await evalJs(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return false;Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(e,${JSON.stringify(String(value))});e.dispatchEvent(new Event('change',{bubbles:true}));return true;})()`),'select '+selector);};
+ for(const method of ['CASH','BANK','CHEQUE','CREDIT']){
+   await click('Record New GRN Inward');
+   await input('input[placeholder="e.g. HUTCH-HQ-8890"]','BROWSER-GRN-'+method);
+   await input('input[placeholder="e.g. Dhammika (Warehouse Officer)"]','Browser Officer');
+   await input('form input[type=number]','2');
+   await select('#grn-payment-method',method);
+   if(method==='BANK'||method==='CHEQUE'){
+     await until(()=>evalJs("document.querySelector('#grn-bank-account')?.options.length>1"),'database bank options');
+     assert((await text()).includes('Browser Source - 001'),'existing bank is selectable');
+     await select('#grn-bank-account',accounts[0].id);
+   }else assert.equal(await evalJs("!!document.querySelector('#grn-bank-account')"),false);
+   if(method==='BANK'){
+     await input('form input[type=number]','100');
+     await click('Save Goods Received Note');
+     await until(()=>evalJs("document.querySelector('.drawer-overlay [role=alert]')?.textContent.includes('does not have enough money')"),'friendly bank payment error inside GRN drawer');
+     assert.equal(await evalJs("document.querySelector('input[placeholder=\"e.g. HUTCH-HQ-8890\"]').value"),'BROWSER-GRN-BANK','failed save retains form details');
+     assert.equal(await evalJs("document.querySelector('form button[type=submit]').disabled"),false,'save button is enabled after failure');
+     assert.equal((await api('/grn')).data.filter(g=>g.supplier_invoice_no==='BROWSER-GRN-BANK').length,0,'failed save creates no GRN');
+     const expected=failedApi.splice(0);assert.equal(expected.length,1);assert.equal(expected[0].status,422);assert(expected[0].url.endsWith('/grn'));
+     await input('form input[type=number]','2');
+   }
+   await click('Save Goods Received Note');
+   await until(async()=>(await api('/grn')).data.some(g=>g.supplier_invoice_no==='BROWSER-GRN-'+method),'GRN persisted '+method);
+   await until(()=>evalJs("!document.querySelector('#grn-payment-method')"),'GRN drawer closed');
+   const saved=(await api('/grn')).data.find(g=>g.supplier_invoice_no==='BROWSER-GRN-'+method);
+   assert.equal(saved.payment_method,method);assert.equal(saved.bank_account_id,method==='BANK'||method==='CHEQUE'?accounts[0].id:null);
+ }
+ assert.equal(Number((await api('/v1/bank-accounts')).data.find(a=>a.id===accounts[0].id).current_balance),275,'bank and cheque both deduct from the selected account');
+ assert.equal(Number((await api('/v1/bank-accounts-summary')).data.grn_cash_payments),100,'cash GRN is recorded as cash outflow');
+ await call('Page.reload');await until(async()=>(await text()).includes('Overview'),'GRN reload');await click('Goods Received (GRN)');
+ await until(async()=>(await text()).includes('BROWSER-GRN-BANK'),'persisted GRN table');
+ assert((await text()).includes('Browser Source - 001'),'bank details survive reload');
+ await evalJs(`(()=>{const row=[...document.querySelectorAll('tr')].find(row=>row.innerText.includes('BROWSER-GRN-BANK'));row.querySelector('button[title="View GRN Details"]').click();})()`);
+ await until(async()=>(await text()).includes('Payment Method:'),'GRN detail payment');
+ assert((await text()).includes('Browser Source - 001'));
+ await evalJs("document.querySelector('.drawer-overlay').click()");
+ await evalJs(`(()=>{const row=[...document.querySelectorAll('tr')].find(row=>row.innerText.includes('BROWSER-GRN-BANK'));row.querySelector('button[title="Edit GRN Details"]').click();})()`);
+ await until(()=>evalJs("document.querySelector('#grn-payment-method')?.value==='BANK'"),'edit saved payment method');
+ await select('#grn-payment-method','CREDIT');await click('Save Changes');
+ await until(async()=>{const g=(await api('/grn')).data.find(g=>g.supplier_invoice_no==='BROWSER-GRN-BANK');return g.payment_method==='CREDIT'&&g.bank_account_id===null;},'GRN payment edit clears bank');
+ assert.equal(Number((await api('/v1/bank-accounts')).data.find(a=>a.id===accounts[0].id).current_balance),375,'credit reclassification refunds the previous bank payment');
+ await click('Cash & Bank Balances');
+ await until(()=>evalJs(`(()=>{const label=[...document.querySelectorAll('.glass-card')].find(card=>card.textContent.includes('Safe Cash in Hand'));return label?.innerText.includes('LKR 100');})()`),'cash in hand reflects GRN expense');
+ checks.push('Browser GRN creation with all payment methods, database banks, reload, details, and payment editing');console.log(checks.at(-1));
+ await click('Stock Issuance');await click('Transfer Between Branches');
+ await until(()=>evalJs("!!document.querySelector('[role=dialog][aria-labelledby=branch-transfer-title]')"),'branch transfer modal');
+ await select('#branch-transfer-from',fixture.branch);await select('#branch-transfer-to',fixture.destinationBranch);
+ const warehouseBefore=(await api('/stocks?branch_id='+fixture.branch)).data;
+ const sourceBatch=warehouseBefore.find(stock=>stock.batch_number==='E2E');assert(sourceBatch);
+ await until(()=>evalJs(`!!document.querySelector('select[aria-label="Item batch 1"] option[value="${sourceBatch.id}"]')`),'available source batch');
+ assert.equal(await evalJs(`!!document.querySelector('#branch-transfer-to option[value="${fixture.branch}"]')`),false,'source cannot be selected as destination');
+ await select('select[aria-label="Item batch 1"]',sourceBatch.id);await input('input[aria-label="Transfer quantity 1"]','4');
+ await input('#branch-transfer-notes','Browser branch replenishment');await click('Confirm Branch Transfer');
+ await until(()=>evalJs("document.querySelector('[role=dialog] [role=status]')?.textContent.includes('completed')"),'branch transfer confirmation');
+ const sourceAfter=(await api('/stocks?branch_id='+fixture.branch)).data.find(stock=>stock.id===sourceBatch.id);
+ const destinationAfter=(await api('/stocks?branch_id='+fixture.destinationBranch)).data.find(stock=>stock.batch_number==='E2E');
+ assert.equal(sourceAfter.quantity,sourceBatch.quantity-4);assert.equal(destinationAfter.quantity,4);
+ assert.equal(Number(destinationAfter.unit_cost),Number(sourceBatch.unit_cost));
+ const branchTransfer=(await api('/v1/branch-stock-transfers')).data[0];assert.equal(branchTransfer.notes,'Browser branch replenishment');
+ await evalJs("document.querySelector('button[aria-label=\"Close branch transfer\"]').click()");
+ await call('Page.reload');await until(async()=>(await text()).includes('Overview'),'branch transfer reload');
+ await click('Stock Issuance');await click('Transfer Between Branches');
+ await until(()=>evalJs(`document.querySelector('[role=dialog] details')?.textContent.includes(${JSON.stringify(branchTransfer.transfer_code)})`),'saved branch transfer history');
+ await evalJs("document.querySelector('button[aria-label=\"Close branch transfer\"]').click()");
+ checks.push('Browser branch transfer preserves batches, updates both warehouses, and survives reload in transfer history');console.log(checks.at(-1));
  await click('Payroll & Salaries');await click('Generate DSR Payroll Run');
  await input('form input[type=number]:nth-of-type(1)','2026');
  await evalJs(`(()=>{const fields=[...document.querySelectorAll('form input[type=number]')];const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(fields[1],'1000');fields[1].dispatchEvent(new Event('input',{bubbles:true}));})()`);

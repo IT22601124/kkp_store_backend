@@ -276,6 +276,10 @@ class BankAccountController extends Controller
             $paymentsCount = $account->salePayments()->count();
             $depositsCount = $account->dsrBankDeposits()->count();
 
+            if (\App\Models\GoodsReceivedNote::where('bank_account_id', $account->id)->exists()) {
+                return $this->errorResponse('Accounts linked to goods received notes must be deactivated instead of deleted.', 422);
+            }
+
             $hasTransfers = \App\Models\BankFundTransfer::where('from_bank_account_id', $account->id)
                 ->orWhere('to_bank_account_id', $account->id)->exists();
             if ($hasTransfers || (int) round((float) $account->current_balance * 100) !== 0) {
@@ -414,6 +418,7 @@ class BankAccountController extends Controller
                 'total_accounts_count' => $accounts->count(),
                 'active_accounts_count'=> $activeCount,
                 'total_balance'        => $totalBalance,
+                'grn_cash_payments'    => (float) DB::table('grn_payment_postings')->where('payment_method', 'CASH')->sum('amount'),
                 'currency'             => 'LKR',
                 'default_account'      => $defaultAccount,
                 'accounts'             => $accountDetails,

@@ -147,6 +147,8 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\ActiveApiUser::class])->
     Route::get('/v1/mobile/routes', [RouteController::class, 'index']);
 
     // Stock & Inventory Management Routes
+    Route::get('/v1/branch-stock-transfers', [\App\Http\Controllers\BranchStockTransferController::class, 'index']);
+    Route::post('/v1/branch-stock-transfers', [\App\Http\Controllers\BranchStockTransferController::class, 'store']);
     Route::get('/stocks', [StockController::class, 'index']);
     Route::get('/stocks/branch', [StockController::class, 'fetchStockByBranch']);
     Route::get('/stocks/{id}', [StockController::class, 'show']);
