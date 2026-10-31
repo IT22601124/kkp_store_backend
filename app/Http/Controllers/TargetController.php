@@ -82,6 +82,24 @@ class TargetController extends Controller
         return response()->json(['success' => true, 'data' => $targets->map(fn($t) => $this->formatTarget($t))]);
     }
 
+    /** Return the logged-in DSR's target for the requested month. */
+    public function mobileCurrent(Request $request)
+    {
+        abort_unless($request->user()?->role === 'DSR_REP', 403);
+
+        $month = $request->query('target_month', now()->format('Y-m'));
+        $request->validate(['target_month' => 'nullable|date_format:Y-m']);
+        $target = MonthlyTarget::with('referrer')
+            ->where('referrer_id', $request->user()->id)
+            ->where('target_month', $month)
+            ->first();
+
+        return response()->json([
+            'success' => true,
+            'data' => $target ? $this->formatTarget($target) : null,
+        ]);
+    }
+
     private function input(Request $request, bool $partial = false): array
     {
         foreach (['referrerId'=>'referrer_id', 'targetMonth'=>'target_month', 'targetAmount'=>'target_amount',

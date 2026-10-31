@@ -26,6 +26,7 @@ class DailySettlement extends Model
         'total_credit_issued',
         'ending_shop_credit',
         'status',
+        'entry_source',
         'notes',
         'submitted_at',
     ];

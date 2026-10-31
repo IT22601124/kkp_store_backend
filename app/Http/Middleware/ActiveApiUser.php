@@ -32,6 +32,7 @@ class ActiveApiUser
                 'RepStockController' => ['index', 'show', 'getByRep'],
                 'StockController' => ['fetchStockByBranch'],
                 'RouteController' => ['index'],
+                'TargetController' => ['mobileCurrent'],
                 'BankTransferController' => ['uploadSlip', 'attachSlipToSale', 'attachSlipToPayment'],
                 'v1\\MobileNotificationController' => ['index', 'markRead', 'markAllRead'],
             ];

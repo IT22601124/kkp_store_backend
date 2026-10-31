@@ -400,7 +400,9 @@ class SaleController extends Controller
                         continue;
                     }
                     SalePayment::create([
-                        'collected_by' => $userId,
+                        // The settlement belongs to the selected DSR, even
+                        // when an agent is entering the sale on their behalf.
+                        'collected_by' => $repId ?? $userId,
                         'sale_id' => $saleRecord->id,
                         'bank_account_id' => $pRecord['bank_account_id'] ?? null,
                         'payment_type' => $pRecord['payment_type'],
@@ -433,6 +435,41 @@ class SaleController extends Controller
             throw $th;
         } catch (Throwable $th) {
             return $this->errorResponse('Failed to record sale: ' . $th->getMessage(), 500);
+        }
+    }
+
+    /** Store all manually entered route POS invoices atomically. */
+    public function storeManualRoute(Request $request)
+    {
+        abort_unless($request->user()?->role === 'AGENT', 403);
+        $request->validate([
+            'sales' => 'required|array|min:1',
+            'sales.*' => 'required|array',
+        ]);
+
+        try {
+            $sales = DB::transaction(function () use ($request) {
+                return collect($request->input('sales'))->map(function (array $salePayload) use ($request) {
+                    $child = Request::create('/api/v1/sales', 'POST', $salePayload);
+                    $child->setUserResolver(fn () => $request->user());
+                    $response = $this->store($child);
+
+                    if ($response->getStatusCode() >= 400) {
+                        $body = $response->getData(true);
+                        throw ValidationException::withMessages([
+                            'sales' => $body['message'] ?? 'One of the route POS sales could not be saved.',
+                        ]);
+                    }
+
+                    return $response->getData(true)['data'] ?? null;
+                })->filter()->values()->all();
+            });
+
+            return $this->successResponse($sales, 'Manual route POS sales saved successfully', 201);
+        } catch (ValidationException $th) {
+            throw $th;
+        } catch (Throwable $th) {
+            return $this->errorResponse('Failed to save manual route POS sales: ' . $th->getMessage(), 500);
         }
     }
 

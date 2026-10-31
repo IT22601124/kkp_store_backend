@@ -113,6 +113,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\ActiveApiUser::class])->
     // Operational Resources
     Route::apiResource('dsr-trips', DsrTripController::class);
     Route::apiResource('targets', TargetController::class);
+    Route::get('/v1/mobile/target', [TargetController::class, 'mobileCurrent']);
     Route::match(['get', 'put'], '/payroll-settings', [PayrollController::class, 'settings']);
     Route::apiResource('payroll', PayrollController::class);
 
@@ -199,6 +200,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\ActiveApiUser::class])->
 
     Route::get('/v1/sales', [SaleController::class, 'index']);
     Route::post('/v1/sales', [SaleController::class, 'store']);
+    Route::post('/v1/sales/manual-route', [SaleController::class, 'storeManualRoute']);
     Route::get('/v1/sales/{id}', [SaleController::class, 'show']);
     Route::apiResource('sales', SaleController::class);
 

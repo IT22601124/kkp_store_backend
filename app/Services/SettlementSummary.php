@@ -18,9 +18,13 @@ class SettlementSummary
             ->whereHas('sale', fn ($query) => $query->where('status', 'COMPLETED'))
             ->where(fn ($query) => $query->where('collected_by', $repId)->orWhere(fn ($legacy) =>
                 $legacy->whereNull('collected_by')->whereHas('sale', fn ($query) => $query->where('rep_id', $repId))))->get();
-        $cash = (float) $payments->where('payment_type', 'CASH')->sum('amount');
-        $cheques = (float) $payments->where('payment_type', 'CHEQUE')->sum('amount');
-        $online = (float) $payments->whereIn('payment_type', ['ONLINE', 'CARD', 'BANK_TRANSFER', 'TRANSFER'])->sum('amount');
+        // Credit collections are reported separately. They are stored as CASH
+        // payments for invoice allocation, so exclude them from the ordinary
+        // daily cash/cheque/online buckets to avoid double counting.
+        $dailyPayments = $payments->reject(fn ($payment) => $payment->notes === 'Credit collection');
+        $cash = (float) $dailyPayments->where('payment_type', 'CASH')->sum('amount');
+        $cheques = (float) $dailyPayments->where('payment_type', 'CHEQUE')->sum('amount');
+        $online = (float) $dailyPayments->whereIn('payment_type', ['ONLINE', 'CARD', 'BANK_TRANSFER', 'TRANSFER'])->sum('amount');
         foreach ($sales->filter(fn ($sale) => $sale->payments->isEmpty()) as $sale) {
             match ($sale->payment_type) {
                 'CASH' => $cash += (float) $sale->paid_amount,
@@ -51,11 +55,44 @@ class SettlementSummary
             'total_cheques_collected' => $cheques, 'total_online_collected' => $online,
             'total_credit_issued' => (float) $creditIssued,
             'total_credit_collected' => (float) $payments->filter(fn ($payment) => $payment->notes === 'Credit collection')->sum('amount'),
-            'ending_shop_credit' => (float) Sale::where('rep_id', $repId)->where('status', 'COMPLETED')->sum('due_amount'),
+            'ending_shop_credit' => $this->endingShopCredit($repId, $date),
             'items_matrix' => array_values($matrix), 'opening_products' => $openingProducts,
             'opening_inventory_value' => round(collect($openingProducts)->sum('opening_value'), 2),
             'day_started' => null, 'day_start_status' => 'Not recorded',
             'is_saved' => false];
+    }
+
+    /**
+     * Calculate outstanding invoice credit at the end of the selected day.
+     *
+     * Sale.due_amount is a current balance and therefore cannot be summed for
+     * a historical settlement. Replaying payments up to the selected date
+     * gives the correct end-of-day balance and also includes credit collected
+     * after the sale was originally created.
+     */
+    private function endingShopCredit(int $repId, string $date): float
+    {
+        $sales = Sale::with('payments')
+            ->where('rep_id', $repId)
+            ->where('status', 'COMPLETED')
+            ->whereDate('sale_date', '<=', $date)
+            ->get();
+
+        return (float) $sales->sum(function ($sale) use ($date) {
+            $paidByEndOfDay = $sale->payments
+                ->filter(fn ($payment) => $payment->status !== 'REJECTED'
+                    && $payment->payment_type !== 'CREDIT'
+                    && $payment->payment_date?->format('Y-m-d') <= $date)
+                ->sum('amount');
+
+            // Legacy sales may not have payment rows. Their stored due_amount
+            // remains the only reliable balance in that case.
+            if ($sale->payments->isEmpty()) {
+                return max(0, (float) $sale->due_amount);
+            }
+
+            return max(0, (float) $sale->total_amount - (float) $paidByEndOfDay);
+        });
     }
 
     /**

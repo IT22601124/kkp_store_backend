@@ -4,13 +4,18 @@ namespace App\Http\Controllers\v1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Traits\ApiResponse;
+use App\Jobs\SendRepBroadcastNotification;
 use App\Models\BankAccount;
 use App\Models\DailySettlement;
 use App\Models\DailySettlementItem;
 use App\Models\DsrBankDeposit;
+use App\Models\NotificationBroadcast;
+use App\Models\NotificationDelivery;
+use App\Models\RepNotification;
 use App\Models\Sale;
 use App\Models\SalePayment;
 use App\Models\Shop;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -253,7 +258,12 @@ class MobileSaleController extends Controller
         try {
             $user = $request->user();
             $repId = $user->role === 'DSR_REP' ? $user->id : (int) $request->input('rep_id', $user->id);
-            $request->validate(['rep_id' => 'nullable|integer|exists:users,id']);
+            $request->validate([
+                'rep_id' => 'nullable|integer|exists:users,id',
+                'manual_entry' => 'nullable|boolean',
+            ]);
+
+            $manualEntry = $user->role === 'AGENT' && $request->boolean('manual_entry');
 
             if (!$repId) {
                 return $this->errorResponse('Rep ID is required to submit settlement sheet', 422);
@@ -271,11 +281,12 @@ class MobileSaleController extends Controller
                 'ending_shop_credit' => 'nullable|numeric|min:0',
                 'dsr_trip_id' => 'nullable|integer',
                 'notes' => 'nullable|string',
-                'items' => 'nullable|array',
+                'manual_entry' => 'nullable|boolean',
+                'items' => $manualEntry ? 'required|array|min:1' : 'nullable|array',
                 'items.*.item_id' => 'required|integer|exists:items,id',
-                'items.*.sold_qty' => 'nullable|integer|min:0',
+                'items.*.sold_qty' => ($manualEntry ? 'required' : 'nullable') . '|integer|min:0',
                 'items.*.sold_quantity' => 'nullable|integer|min:0',
-                'items.*.total_revenue' => 'nullable|numeric|min:0',
+                'items.*.total_revenue' => ($manualEntry ? 'required' : 'nullable') . '|numeric|min:0',
                 'bank_deposits' => 'nullable|array',
                 'bank_deposits.*.bank_account_id' => 'required_with:bank_deposits|integer|exists:bank_accounts,id',
                 'bank_deposits.*.amount' => 'required_with:bank_deposits|numeric|min:0.01',
@@ -291,11 +302,14 @@ class MobileSaleController extends Controller
 
             $date = $request->input('date', now()->format('Y-m-d'));
 
-            $settlement = DB::transaction(function () use ($request, $repId, $date) {
+            $settlement = DB::transaction(function () use ($request, $repId, $date, $manualEntry) {
                 $rep = \App\Models\User::whereKey($repId)->lockForUpdate()->firstOrFail();
                 if ($rep->role !== 'DSR_REP') {
                     throw \Illuminate\Validation\ValidationException::withMessages(['rep_id' => 'Select a sales representative.']);
                 }
+                // Both mobile and web/manual submissions must use the same
+                // server-side snapshot. The browser only records POS sales;
+                // it must not be able to submit stale or fabricated totals.
                 $snapshot = app(\App\Services\SettlementSummary::class)->forRep((int) $repId, $date);
                 $snapshot['items'] = $snapshot['items_matrix'];
                 unset($snapshot['status']);
@@ -325,6 +339,7 @@ class MobileSaleController extends Controller
                         'cash_counted' => $request->input('cash_counted'),
                         'total_credit_collected' => $request->input('total_credit_collected', 0),
                         'status' => 'SUBMITTED',
+                        'entry_source' => $manualEntry ? 'MANUAL' : 'MOBILE',
                         'submitted_at' => now(),
                     ]);
                 } else {
@@ -341,6 +356,7 @@ class MobileSaleController extends Controller
                         'total_credit_issued' => $request->input('total_credit_issued', 0),
                         'ending_shop_credit' => $request->input('ending_shop_credit', 0),
                         'status' => 'SUBMITTED',
+                        'entry_source' => $manualEntry ? 'MANUAL' : 'MOBILE',
                         'notes' => $request->input('notes'),
                         'cash_counted' => $request->input('cash_counted'),
                         'total_credit_collected' => $request->input('total_credit_collected', 0),
@@ -528,20 +544,77 @@ class MobileSaleController extends Controller
                 return $this->errorResponse('Validation failed', 422, $validator->errors()->first());
             }
 
-            $settlement = DB::transaction(function () use ($request, $settlement) {
-                \App\Models\User::whereKey($settlement->rep_id)->lockForUpdate()->first();
+            [$settlement, $deliveryIds] = DB::transaction(function () use ($request, $settlement) {
+                User::whereKey($settlement->rep_id)->lockForUpdate()->first();
                 $settlement->refresh();
-                if ($settlement->status !== $request->input('status')) {
+                $previousStatus = $settlement->status;
+                $nextStatus = $request->input('status');
+                $deliveryIds = [];
+
+                if ($previousStatus !== $nextStatus) {
                     $settlement->audited_by = $request->user()->id;
                     $settlement->audited_at = now();
                 }
-                $settlement->status = $request->input('status');
+                $settlement->status = $nextStatus;
                 if ($request->filled('notes')) {
                     $settlement->notes = $request->input('notes');
                 }
                 $settlement->save();
-                return $settlement;
+
+                // Notify only when the status actually changes. The inbox
+                // record is always saved; an FCM delivery is queued when the
+                // DSR has a registered device token.
+                if ($previousStatus !== $nextStatus) {
+                    $rep = User::findOrFail($settlement->rep_id);
+                    $date = $settlement->settlement_date->format('Y-m-d');
+                    $title = match ($nextStatus) {
+                        'APPROVED' => 'Daily settlement approved',
+                        'REJECTED' => 'Daily settlement needs revision',
+                        'SUBMITTED' => 'Daily settlement submitted',
+                        default => 'Daily settlement status updated',
+                    };
+                    $body = match ($nextStatus) {
+                        'APPROVED' => "Your DSR settlement for {$date} has been approved.",
+                        'REJECTED' => "Your DSR settlement for {$date} was rejected and needs revision.",
+                        'SUBMITTED' => "Your DSR settlement for {$date} has been submitted for audit.",
+                        default => "Your DSR settlement for {$date} is now {$nextStatus}.",
+                    };
+                    if ($nextStatus === 'REJECTED' && $settlement->notes) {
+                        $body .= ' Note: ' . $settlement->notes;
+                    }
+
+                    $token = is_string($rep->fcm_token) ? trim($rep->fcm_token) : '';
+                    $broadcast = NotificationBroadcast::create([
+                        'created_by' => $request->user()->id,
+                        'title' => $title,
+                        'body' => $body,
+                        'status' => $token === '' ? 'completed' : 'queued',
+                        'total_reps' => 1,
+                        'skipped_reps' => $token === '' ? 1 : 0,
+                        'targeted_devices' => $token === '' ? 0 : 1,
+                    ]);
+                    RepNotification::create([
+                        'broadcast_id' => $broadcast->id,
+                        'user_id' => $rep->id,
+                    ]);
+
+                    if ($token !== '') {
+                        $deliveryIds[] = NotificationDelivery::create([
+                            'broadcast_id' => $broadcast->id,
+                            'device_token' => $token,
+                        ])->id;
+                    }
+                }
+
+                return [$settlement, $deliveryIds];
             });
+
+            foreach ($deliveryIds as $deliveryId) {
+                // Approval is an interactive audit action. Send this push
+                // before returning the response so it does not depend on a
+                // separately running database queue worker.
+                SendRepBroadcastNotification::dispatchSync($deliveryId);
+            }
 
             return $this->successResponse($settlement, 'Daily settlement status updated successfully');
         } catch (\Illuminate\Validation\ValidationException | \Illuminate\Database\Eloquent\ModelNotFoundException | \Symfony\Component\HttpKernel\Exception\HttpException $th) {

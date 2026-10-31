@@ -11,6 +11,9 @@ use App\Models\DsrBankDeposit;
 use App\Models\DsrProfile;
 use App\Models\GoodsReceivedNote;
 use App\Models\Item;
+use App\Models\DailySettlement;
+use App\Models\MonthlyTarget;
+use App\Models\RepNotification;
 use App\Models\RepStock;
 use App\Models\Route;
 use App\Models\Sale;
@@ -19,7 +22,9 @@ use App\Models\Shop;
 use App\Models\Stock;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -331,6 +336,142 @@ class WebWorkflowTest extends TestCase
         $this->postJson('/api/login', ['phone' => $agent->phone, 'password' => 'password'])->assertForbidden();
     }
 
+    public function test_agent_can_create_and_update_a_manual_end_of_day_dsr_sheet(): void
+    {
+        $data = $this->fixture();
+        $repStock = RepStock::create(['rep_id' => $data['rep']->id, 'status' => 'APPROVED', 'total_value' => 1000]);
+        $repStockItem = AcceptedRequestItem::create(['rep_stock_id' => $repStock->id, 'item_id' => $data['item']->id,
+            'batch_number' => 'MANUAL-POS', 'quantity' => 10]);
+
+        $this->postJson('/api/v1/sales/manual-route', ['sales' => [[
+            'rep_id' => $data['rep']->id,
+            'shop_id' => $data['shop']->id,
+            'branch_id' => $data['branch']->id,
+            'sale_date' => '2026-10-31 16:00:00',
+            'payment_type' => 'CASH',
+            'paid_amount' => 200,
+            'items' => [['item_id' => $data['item']->id, 'quantity' => 2, 'unit_price' => 100]],
+        ]]])->assertCreated();
+        $this->assertEquals(8, $repStockItem->fresh()->quantity);
+
+        $this->postJson('/api/v1/sales/manual-route', ['sales' => [
+            ['rep_id' => $data['rep']->id, 'shop_id' => $data['shop']->id, 'branch_id' => $data['branch']->id,
+                'sale_date' => '2026-10-31 16:30:00', 'payment_type' => 'CASH', 'paid_amount' => 100,
+                'items' => [['item_id' => $data['item']->id, 'quantity' => 1, 'unit_price' => 100]]],
+            ['rep_id' => $data['rep']->id, 'shop_id' => $data['shop']->id, 'branch_id' => $data['branch']->id,
+                'sale_date' => '2026-10-31 16:31:00', 'payment_type' => 'CASH', 'paid_amount' => 999999,
+                'items' => [['item_id' => $data['item']->id, 'quantity' => 99, 'unit_price' => 100]]],
+        ]])->assertUnprocessable();
+        $this->assertDatabaseCount('sales', 1);
+        $this->assertEquals(8, $repStockItem->fresh()->quantity);
+
+        $payload = [
+            'manual_entry' => true,
+            'rep_id' => $data['rep']->id,
+            'date' => '2026-10-31',
+            // These deliberately incorrect values must be ignored. The
+            // settlement is rebuilt from the saved manual POS sale.
+            'shops_visited_count' => 8,
+            'total_sales_value' => 200,
+            'total_cash_collected' => 200,
+            'total_cheques_collected' => 1500,
+            'total_online_collected' => 2000,
+            'total_credit_issued' => 4000,
+            'ending_shop_credit' => 4000,
+            'cash_counted' => 4950,
+            'notes' => 'Entered by agent because the DSR had no mobile phone.',
+            'items' => [[
+                'item_id' => $data['item']->id,
+                'name' => 'Item',
+                'sold_qty' => 2,
+                'total_revenue' => 200,
+            ]],
+        ];
+
+        $response = $this->postJson('/api/v1/daily-settlement', $payload)
+            ->assertCreated()
+            ->assertJsonPath('data.total_sales_value', '200.00');
+        $id = $response->json('data.id');
+
+        $this->assertDatabaseHas('daily_settlements', [
+            'id' => $id,
+            'rep_id' => $data['rep']->id,
+            'entry_source' => 'MANUAL',
+            'total_sales_value' => 200,
+            'shops_visited_count' => 1,
+            'total_cash_collected' => 200,
+            'total_cheques_collected' => 0,
+            'total_online_collected' => 0,
+            'total_credit_issued' => 0,
+            'ending_shop_credit' => 0,
+        ]);
+        $this->assertDatabaseHas('daily_settlement_items', [
+            'daily_settlement_id' => $id,
+            'item_id' => $data['item']->id,
+            'item_name' => 'Item',
+            'sold_quantity' => 2,
+            'total_revenue' => 200,
+        ]);
+
+        $this->postJson('/api/v1/daily-settlement', array_merge($payload, [
+            'total_sales_value' => 300,
+            'notes' => 'Corrected manually after checking the paper sheet.',
+        ]))->assertCreated();
+
+        $this->assertDatabaseHas('daily_settlements', [
+            'id' => $id,
+            'total_sales_value' => 200,
+            'entry_source' => 'MANUAL',
+        ]);
+
+        $this->postJson('/api/v1/daily-settlement', array_diff_key($payload, ['items' => true]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('items');
+    }
+
+    public function test_settlement_status_change_notifies_the_selected_dsr_once(): void
+    {
+        $data = $this->fixture();
+        $data['rep']->update(['fcm_token' => 'settlement-status-device']);
+        config(['services.firebase.credentials' => 'missing-test-credentials.json', 'services.firebase.server_key' => 'test-server-key']);
+        Cache::forget('firebase_fcm_access_token');
+        Http::fake(['fcm.googleapis.com/*' => Http::response(['success' => 1])]);
+
+        $settlement = DailySettlement::create([
+            'settlement_code' => 'SETTLE-NOTIFY-1',
+            'rep_id' => $data['rep']->id,
+            'settlement_date' => '2026-10-31',
+            'shops_visited_count' => 1,
+            'total_sales_value' => 240,
+            'status' => 'SUBMITTED',
+            'entry_source' => 'MANUAL',
+        ]);
+
+        $this->postJson('/api/v1/daily-settlements/'.$settlement->id.'/status', [
+            'status' => 'APPROVED',
+        ])->assertOk();
+
+        $notification = RepNotification::where('user_id', $data['rep']->id)->firstOrFail();
+        $this->assertDatabaseHas('notification_broadcasts', [
+            'id' => $notification->broadcast_id,
+            'title' => 'Daily settlement approved',
+        ]);
+        $this->assertDatabaseHas('notification_deliveries', [
+            'broadcast_id' => $notification->broadcast_id,
+            'status' => 'sent',
+        ]);
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/fcm/send')
+            && $request['to'] === 'settlement-status-device');
+
+        // Repeating the same status updates notes but does not notify again.
+        $this->postJson('/api/v1/daily-settlements/'.$settlement->id.'/status', [
+            'status' => 'APPROVED',
+            'notes' => 'Reviewed.',
+        ])->assertOk();
+        $this->assertDatabaseCount('rep_notifications', 1);
+        $this->assertDatabaseCount('notification_deliveries', 1);
+    }
+
     public function test_web_logout_revokes_the_actual_bearer_token(): void
     {
         $agent = User::factory()->create(['role' => 'AGENT']);
@@ -434,6 +575,25 @@ class WebWorkflowTest extends TestCase
         $this->getJson('/api/targets')->assertOk()->assertJsonPath('data.0.achieved_amount', 0);
         $payload['target_month']='October 2026';
         $this->postJson('/api/targets', $payload)->assertUnprocessable();
+    }
+
+    public function test_dsr_can_retrieve_their_monthly_target_for_mobile_home(): void
+    {
+        $data = $this->fixture();
+        MonthlyTarget::create([
+            'referrer_id' => $data['rep']->id,
+            'target_month' => '2026-10',
+            'target_amount' => 750000,
+            'target_units' => 100,
+            'status' => 'ACTIVE',
+        ]);
+
+        Sanctum::actingAs($data['rep']);
+        $this->getJson('/api/v1/mobile/target?target_month=2026-10')
+            ->assertOk()
+            ->assertJsonPath('data.referrer_id', $data['rep']->id)
+            ->assertJsonPath('data.target_amount', 750000)
+            ->assertJsonPath('data.target_month', '2026-10');
     }
 
 }
