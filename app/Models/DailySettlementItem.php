@@ -15,10 +15,14 @@ class DailySettlementItem extends Model
         'item_name',
         'item_code',
         'sold_quantity',
+        'opening_day_quantity',
+        'current_quantity',
         'total_revenue',
     ];
 
     protected $casts = [
+        'opening_day_quantity' => 'integer',
+        'current_quantity' => 'integer',
         'total_revenue' => 'decimal:2',
     ];
 

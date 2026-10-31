@@ -198,6 +198,8 @@ class MobileSaleController extends Controller
                             'name' => $it->item_name,
                             'code' => $it->item_code,
                             'sold_qty' => (int) $it->sold_quantity,
+                            'opening_day_quantity' => (int) $it->opening_day_quantity,
+                            'current_quantity' => (int) $it->current_quantity,
                             'total_revenue' => (float) $it->total_revenue,
                         ];
                     })->toArray();
@@ -216,6 +218,11 @@ class MobileSaleController extends Controller
                         'total_credit_issued' => (float) $savedSettlement->total_credit_issued,
                         'ending_shop_credit' => (float) $savedSettlement->ending_shop_credit,
                         'items_matrix' => $itemsMatrix,
+                        'opening_products' => ($openingProducts = app(\App\Services\SettlementSummary::class)
+                            ->openingProducts((int) $repId, $date)),
+                        'opening_inventory_value' => round(collect($openingProducts)->sum('opening_value'), 2),
+                        'day_started' => null,
+                        'day_start_status' => 'Not recorded',
                         'bank_deposits' => $savedSettlement->bankDeposits,
                         'notes' => $savedSettlement->notes,
                         'cash_counted' => $savedSettlement->cash_counted,
@@ -344,7 +351,23 @@ class MobileSaleController extends Controller
                 // Sync items
                 DailySettlementItem::where('daily_settlement_id', $settlementRecord->id)->delete();
 
-                $itemsInput = $request->input('items', []);
+                $openingByItem = collect($snapshot['opening_products'] ?? [])->keyBy('item_id');
+                $itemsInput = collect($request->input('items', []))
+                    ->keyBy('item_id');
+                foreach ($openingByItem as $itemId => $opening) {
+                    $item = $itemsInput->get($itemId, []);
+                    $itemsInput->put($itemId, array_merge([
+                        'item_id' => $itemId,
+                        'name' => $opening['item_name'] ?? 'Item',
+                        'code' => $opening['item_code'] ?? null,
+                        'sold_qty' => 0,
+                        'total_revenue' => 0,
+                    ], $item, [
+                        'opening_day_quantity' => (int) ($opening['opening_quantity'] ?? 0),
+                        'current_quantity' => (int) ($opening['current_quantity'] ?? 0),
+                    ]));
+                }
+                $itemsInput = $itemsInput->values()->all();
                 foreach ($itemsInput as $it) {
                     DailySettlementItem::create([
                         'daily_settlement_id' => $settlementRecord->id,
@@ -352,6 +375,8 @@ class MobileSaleController extends Controller
                         'item_name' => $it['name'] ?? ($it['item_name'] ?? 'Item'),
                         'item_code' => $it['code'] ?? ($it['item_code'] ?? null),
                         'sold_quantity' => $it['sold_qty'] ?? ($it['sold_quantity'] ?? 0),
+                        'opening_day_quantity' => $it['opening_day_quantity'] ?? 0,
+                        'current_quantity' => $it['current_quantity'] ?? 0,
                         'total_revenue' => $it['total_revenue'] ?? 0,
                     ]);
                 }
@@ -463,6 +488,12 @@ class MobileSaleController extends Controller
             $settlements = $query->orderBy('settlement_date', 'desc')->orderBy('id', 'desc')->get();
 
             foreach ($settlements as $settlement) {
+                $openingProducts = app(\App\Services\SettlementSummary::class)
+                    ->openingProducts((int) $settlement->rep_id, $settlement->settlement_date->format('Y-m-d'));
+                $settlement->setAttribute('opening_products', $openingProducts);
+                $settlement->setAttribute('opening_inventory_value', round(collect($openingProducts)->sum('opening_value'), 2));
+                $settlement->setAttribute('day_started', null);
+                $settlement->setAttribute('day_start_status', 'Not recorded');
                 $settlement->setAttribute('sale_payments', SalePayment::with('bankAccount')
                     ->whereDate('payment_date', $settlement->settlement_date->format('Y-m-d'))
                     ->whereHas('sale', fn ($q) => $q->where('rep_id', $settlement->rep_id)->where('status', 'COMPLETED'))
