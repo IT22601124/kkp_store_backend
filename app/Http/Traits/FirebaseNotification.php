@@ -453,6 +453,18 @@ trait FirebaseNotification
     {
         $explicitPath = config('services.firebase.credentials');
         if (!empty($explicitPath)) {
+            // FIREBASE_CREDENTIALS is commonly configured as a project-relative
+            // path. Resolve it from the application root instead of PHP's
+            // current working directory (which may differ under IIS, Apache,
+            // queue workers, or a process manager).
+            $isAbsolutePath = $explicitPath[0] === '/'
+                || $explicitPath[0] === '\\'
+                || (strlen($explicitPath) > 1 && $explicitPath[1] === ':');
+
+            if (!$isAbsolutePath) {
+                $explicitPath = base_path($explicitPath);
+            }
+
             if (file_exists($explicitPath) && is_readable($explicitPath)) {
                 $content = @file_get_contents($explicitPath);
                 $json = json_decode($content, true);

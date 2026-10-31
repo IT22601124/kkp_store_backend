@@ -161,6 +161,7 @@ class RepStockController extends Controller
      */
     public function issueStockForRep(Request $request)
     {
+     Log::info('fffffffffffff',$request->all());   
         abort_unless(in_array($request->user()->role, ['AGENT', 'SYSTEM_ADMIN']), 403);
         try {
             $validator = Validator::make($request->all(), [
@@ -229,11 +230,14 @@ class RepStockController extends Controller
             } catch (Throwable $notifError) {
                 Log::warning('[RepStockController] Firebase notification dispatch error during stock issuance: ' . $notifError->getMessage());
             }
+            Log::info("[RepStockController] Stock issued to Rep #{$rep_id} successfully. RepStock ID: {$repStock->id}");
 
             return $this->successResponse($repStock, 'Stock issued to rep successfully', 200);
-        } catch (\Illuminate\Validation\ValidationException | \Illuminate\Database\Eloquent\ModelNotFoundException $th) {
+        } catch (Throwable $th) {
+            Log::error('[RepStockController] Validation or Model Not Found error during stock issuance: ' . $th->getMessage());
             throw $th;
         } catch (Throwable $th) {
+            Log::error('[RepStockController] Error issuing stock to rep: ' . $th->getMessage());
             return $this->errorResponse('Failed to issue stock to rep: ' . $th->getMessage(), 500);
         }
     }

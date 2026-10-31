@@ -95,7 +95,9 @@ class NotificationBroadcastController extends Controller
 
         foreach ($deliveryIds as $id) {
             try {
+                Log::info('Dispatching SendRepBroadcastNotification job', ['delivery_id' => $id]);
                 SendRepBroadcastNotification::dispatch($id);
+                Log::info('Dispatched SendRepBroadcastNotification job', ['delivery_id' => $id]);
             } catch (Throwable $exception) {
                 Log::error('Unable to dispatch rep notification', ['delivery_id' => $id, 'error' => $exception->getMessage()]);
                 (new SendRepBroadcastNotification($id))->finish(false);
