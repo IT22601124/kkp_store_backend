@@ -3,11 +3,14 @@
 namespace App\Http\Controllers\v1;
 
 use App\Http\Controllers\Controller;
+use App\Events\ShopCreated;
 use App\Http\Traits\ApiResponse;
 use App\Models\Shop;
 use App\Models\ShopGpsLocation;
 use App\Models\Route;
 use App\Models\Sale;
+use App\Models\User;
+use App\Http\Traits\FirebaseNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -18,6 +21,7 @@ use Illuminate\Validation\ValidationException;
 class MobileShopController extends Controller
 {
     use ApiResponse;
+    use FirebaseNotification;
 
     /**
      * Format shop for mobile API response (providing both snake_case and camelCase keys).
@@ -141,6 +145,46 @@ class MobileShopController extends Controller
             $this->saveGps($shop, $request);
             return $shop;
         });
+
+        try {
+            event(new ShopCreated($shop));
+            Log::info("[MobileShopController] ShopCreated broadcast dispatched for Shop #{$shop->id}");
+        } catch (Throwable $th) {
+            Log::warning('[MobileShopController] Shop realtime broadcast error: '.$th->getMessage());
+        }
+
+        try {
+            $assignedReps = User::where('role', 'DSR_REP')
+                ->where('status', 'ACTIVE')
+                ->whereHas('dsrProfile', fn ($query) => $query->where('assigned_route_id', $shop->route_id))
+                ->whereNotNull('fcm_token')
+                ->where('fcm_token', '<>', '')
+                ->get(['id', 'name', 'fcm_token']);
+
+            foreach ($assignedReps as $assignedRep) {
+                $result = $this->sendFirebaseNotification(
+                    $assignedRep->fcm_token,
+                    'New Shop Added to Your Route',
+                    "Shop {$shop->shop_name} has been added to your assigned route.",
+                    [
+                        'type' => 'shop_created',
+                        'shop_id' => (string) $shop->id,
+                        'route_id' => (string) $shop->route_id,
+                        'shop_code' => (string) $shop->shop_code,
+                        'click_action' => 'FLUTTER_NOTIFICATION_CLICK',
+                    ]
+                );
+
+                if (!empty($result['success'])) {
+                    Log::info("[MobileShopController] Firebase shop notification sent to DSR #{$assignedRep->id} for Shop #{$shop->id}");
+                } else {
+                    Log::warning("[MobileShopController] Firebase shop notification failed for DSR #{$assignedRep->id}: ".($result['message'] ?? 'Unknown reason'));
+                }
+            }
+        } catch (Throwable $th) {
+            Log::warning('[MobileShopController] Firebase shop notification error: '.$th->getMessage());
+        }
+
         return $this->successResponse($this->formatShop($shop), 'Shop created successfully', 201);
     }
 

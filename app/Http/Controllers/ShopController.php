@@ -10,6 +10,7 @@ use App\Services\RepAccess;
 use App\Models\Sale;
 use App\Models\SalePayment;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 class ShopController extends Controller
